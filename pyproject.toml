@@ -3,6 +3,8 @@ name = "yachay-local-data-modeling"
 version = "0.1.0"
 description = "Motor local de modelado de información con transformaciones y modelos reutilizables"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Panda", email = "panda@machiyotl.com" }]
 requires-python = ">=3.11,<3.14"
 dependencies = [
