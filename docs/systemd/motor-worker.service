@@ -1,0 +1,62 @@
+[Unit]
+Description=Yachay — worker del motor de datos local
+Documentation=file:///home/panda/Yachay/docs/systemd/README.md
+# El worker es la única autoridad de ejecución (ADR-008): escanea, reclama,
+# reconcilia y publica. No depende de la API.
+After=default.target
+
+[Service]
+Type=exec
+# Ruta del proyecto. Ajustar si el repo vive en otro sitio.
+WorkingDirectory=%h/Yachay
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=%h/Yachay/src
+ExecStart=%h/Yachay/.venv/bin/python -m motor run --root %h/Yachay
+
+# Reinicio ante fallo del proceso (OOM, excepción no controlada). El lease y la
+# reconciliación se encargan de recuperar el estado al volver.
+Restart=on-failure
+RestartSec=2
+# Terminación ordenada: el worker cierra su conexión SQLite al salir.
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=30
+
+# Sin watchdog: el pipeline es de un solo disparo y no hay fronteras de lote
+# donde latir. Un watchdog mataría CSVs legítimamente lentos y, con
+# MAX_ATTEMPTS=3, los convertiría en fallos deterministas. Cablearlo es T-013.
+# (ver docs/adr/ADR-018.md)
+
+# Endurecimiento (§13). Sin red: el worker solo toca SQLite, DuckDB, Parquet y
+# el sistema de archivos local.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+
+# Rutas de escritura: todo el estado bajo data/ y el temporal propio.
+ReadWritePaths=%h/Yachay/data
+UMask=0027
+
+# Presupuesto de recursos: perfil NORMAL, valores de arranque, NO calibrados
+# (spec sección 16). No son resultados de rendimiento medidos.
+MemoryMax=8G
+CPUQuota=200%
+CPUWeight=100
+TasksMax=256
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

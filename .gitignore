@@ -1,0 +1,29 @@
+.venv/
+.serena/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Documentación generada por el Flow: no es fuente canónica (T-003).
+docs/generated/
+
+# Artefactos locales de herramientas, nunca versionados.
+/code
+/vscode-cli.tgz
+.env
+.env.*
+!.env.example
+
+# Salidas locales de diseño y automatización de navegador (capturas, láminas de
+# revisión). No son fuente canónica.
+/output/
+.playwright-cli/
+

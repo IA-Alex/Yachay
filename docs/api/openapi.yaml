@@ -1,0 +1,1371 @@
+openapi: 3.1.0
+info:
+  title: Yachay v1 API
+  version: "1.0.0"
+  summary: API local del motor de datos Yachay sobre socket Unix.
+  description: |
+    Proyección delgada y sin estado sobre SQLite y el sistema de ficheros
+    (ADR-016). La API lee estado, pide a la cola que cambie una bandera y deja
+    entradas en `inbox/`; nunca reconcilia, nunca reclama un lease, nunca
+    ejecuta un pipeline y nunca crea un trabajo.
+
+    **Transporte.** `http.server` de la biblioteca estándar sobre un socket
+    `AF_UNIX` en `<root>/data/motor.sock` (modo `0660`). **No hay listener
+    TCP**: la API no es alcanzable por red, ni siquiera en `localhost`. Por eso
+    no se declara `servers` con una URL http: el "host" es una ruta de fichero.
+
+    **Envelope único.** Éxito: `{api_version, ok: true, data}`. Error:
+    `{api_version, ok: false, error: {code, message}}`. `api_version` es `v1`.
+    Los códigos de error son un **conjunto cerrado** y el cliente ramifica por
+    `code`, nunca por `message`.
+
+    **HTTP/1.1 con `Connection: close`.** `HEAD` se resuelve como `GET` y el
+    cuerpo se omite (RFC 9110). Un método no declarado sobre una ruta existente
+    devuelve 405, no 404.
+
+    **Autenticación opcional.** Por defecto, el control de acceso es el modo del
+    socket y la pertenencia al grupo de servicio. Si se configura
+    `YACHAY_API_TOKEN`, todas las peticiones deben incluir `Authorization: Bearer
+    <token>`; de lo contrario reciben `401 unauthorized`.
+  license:
+    name: Software propietario
+    identifier: LicenseRef-Proprietary
+  contact:
+    name: Yachay
+tags:
+  - name: health
+    description: Salud del servicio.
+  - name: jobs
+    description: Cola de trabajos. La API solo lee estado y pide cancelar o reintentar.
+  - name: inputs
+    description: Bandeja de entrada del escáner.
+  - name: datasets
+    description: Catálogo de resultados publicados.
+  - name: models
+    description: Modelos de datos guardados (ADR-019, M6).
+  - name: runs
+    description: Ejecuciones de un modelo y comparación entre dos.
+
+# El transporte no es HTTP sobre red: la "base" es el socket Unix del proceso.
+# Se documenta como comentario; un `servers` con url http://localhost sería falso.
+x-transport:
+  kind: unix-socket
+  default_path: data/motor.sock
+  mode: "0660"
+  tcp: false
+
+# Si YACHAY_API_TOKEN está configurado, cualquier operación puede devolver 401.
+x-authentication:
+  optional: true
+  environment_variable: YACHAY_API_TOKEN
+  scheme: bearer
+
+paths:
+  /v1/health:
+    get:
+      tags: [health]
+      operationId: getHealth
+      summary: Comprueba que el servicio puede leer su autoridad.
+      description: |
+        Devuelve 200 cuando SQLite responde. Una base que no responde es
+        `unavailable` (503), no `internal_error`: el cliente no puede arreglarla,
+        pero el operador debe poder distinguir "la base no está" de "hay un
+        defecto".
+      responses:
+        "200":
+          description: El servicio responde y SQLite lee correctamente.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthEnvelope"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/jobs:
+    get:
+      tags: [jobs]
+      operationId: listJobs
+      summary: Lista trabajos, opcionalmente filtrados por estado.
+      parameters:
+        - name: state
+          in: query
+          required: false
+          description: Filtra por uno de los estados reales del motor.
+          schema:
+            $ref: "#/components/schemas/JobState"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Lista de trabajos, más recientes primero.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobListEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/jobs/{job_id}:
+    get:
+      tags: [jobs]
+      operationId: getJob
+      summary: Detalle de un trabajo.
+      description: |
+        Proyección explícita de campos. Nunca expone `lease_until`, `worker_id`
+        ni rutas del sistema de ficheros (ADR-016 §13).
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: El trabajo solicitado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobEnvelope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/jobs/{job_id}/cancel:
+    post:
+      tags: [jobs]
+      operationId: cancelJob
+      summary: Solicita la cancelación cooperativa de un trabajo.
+      description: |
+        Solo escribe `cancel_requested` (vía `jobs.request_cancel`) y solo en
+        `claimed|queued|running|deferred`. En cualquier otro estado devuelve
+        `invalid_state` (409). El worker decide cuándo se detiene: la API no
+        mata nada.
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: La cancelación quedó solicitada.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobCancelEnvelope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/InvalidState"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/jobs/{job_id}/retry:
+    post:
+      tags: [jobs]
+      operationId: retryJob
+      summary: Reencola un trabajo terminal con presupuesto de intentos nuevo.
+      description: |
+        Acepta `failed|quarantined|cancelled`, exige que el input siga existiendo
+        en disco y, en una sola transacción, deja `state = 'queued'`,
+        `attempt = 0` y limpia `run_id`, `worker_id`, `lease_until` y
+        `cancel_requested`. Deja el evento de auditoría `api_retry_job`.
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: El trabajo volvió a la cola.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobRetryEnvelope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/InvalidState"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/inputs:
+    post:
+      tags: [inputs]
+      operationId: uploadInput
+      summary: Deposita un archivo en la bandeja de entrada (`inbox/`).
+      description: |
+        La API **no crea un trabajo**: el escáner del worker admite el archivo en
+        su propio ciclo, así que hay una sola vía de admisión (ADR-008) y la API
+        no puede saltarse la admisión, la identidad ni el `job_key`.
+
+        El cuerpo es el fichero **en crudo**. Un `Content-Type: application/json`
+        declarado se rechaza con `bad_request`. El archivo se escribe en
+        `<nombre>.part` con `O_EXCL` y se sincroniza con `fsync`. El destino se
+        publica mediante un enlace atómico que falla si el nombre ya existe;
+        dos subidas concurrentes no entrelazan bytes ni reemplazan el archivo,
+        y la petición que pierde la carrera recibe 409.
+      parameters:
+        - name: name
+          in: query
+          required: false
+          description: |
+            Nombre de fichero simple. También puede venir en la cabecera
+            `X-Yachay-Filename`.
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$"
+        - name: X-Yachay-Filename
+          in: header
+          required: false
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$"
+      requestBody:
+        required: true
+        description: Contenido binario del archivo de entrada.
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              contentEncoding: binary
+      responses:
+        "201":
+          description: El archivo quedó depositado en la bandeja.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UploadEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/InvalidState"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/profile:
+    get:
+      tags: [inputs]
+      operationId: profileInput
+      summary: Perfila un archivo de la bandeja sin crear nada.
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$"
+      responses:
+        "200":
+          description: Perfil por columna del archivo.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProfileEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/datasets:
+    get:
+      tags: [datasets]
+      operationId: listDatasets
+      summary: Lista los datasets publicados.
+      parameters:
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Catálogo de versiones publicadas, más recientes primero.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DatasetListEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/datasets/{run_id}:
+    get:
+      tags: [datasets]
+      operationId: getDataset
+      summary: Devuelve el manifest de un dataset.
+      description: |
+        El manifest es el commit físico (ADR-014), así que es el único artefacto
+        del dataset que la API sirve. Un dataset registrado cuyo manifest falta
+        en disco devuelve `unavailable` (503).
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: El contenido del `manifest.json`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManifestEnvelope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/datasets/{run_id}/manifest:
+    get:
+      tags: [datasets]
+      operationId: getDatasetManifest
+      summary: Alias de `GET /v1/datasets/{run_id}`.
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: El contenido del `manifest.json`.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManifestEnvelope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/models:
+    get:
+      tags: [models]
+      operationId: listModels
+      summary: Lista los modelos guardados.
+      responses:
+        "200":
+          description: Resumen de cada modelo (sin atributos).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelListEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [models]
+      operationId: createModel
+      summary: Crea un modelo perfiando un archivo ya depositado en `inbox/`.
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: source
+          in: query
+          required: true
+          description: Nombre simple del archivo en `inbox/`.
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$"
+      responses:
+        "201":
+          description: Modelo creado con la entidad inferida.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/InvalidState"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/models/{model_id}:
+    get:
+      tags: [models]
+      operationId: getModel
+      summary: Detalle de un modelo, con entidades y atributos.
+      parameters:
+        - $ref: "#/components/parameters/ModelId"
+      responses:
+        "200":
+          description: El modelo completo.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/models/{model_id}/runs:
+    get:
+      tags: [runs]
+      operationId: listRuns
+      summary: Lista las ejecuciones de un modelo.
+      parameters:
+        - $ref: "#/components/parameters/ModelId"
+      responses:
+        "200":
+          description: Ejecuciones del modelo, más recientes primero.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunListEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [runs]
+      operationId: createRun
+      summary: Ejecuta un modelo sobre un archivo y guarda la huella.
+      parameters:
+        - $ref: "#/components/parameters/ModelId"
+        - name: source
+          in: query
+          required: true
+          description: Nombre simple del archivo en `inbox/`.
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$"
+      responses:
+        "201":
+          description: Ejecución registrada con su huella.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunCreateEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/InvalidState"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/models/{model_id}/rules:
+    get:
+      tags: [models]
+      operationId: listRules
+      summary: Lista las reglas de un modelo en su orden de aplicación.
+      description: |
+        Cada regla se expone como `{name, type, column, params}`. `column` es la
+        columna de destino y `params` solo lleva los campos propios del tipo:
+        `to` (rename/cast), `values` (map), `allowed` (domain) o `equals`
+        (filter). Los tipos válidos son `rename`, `cast`, `map`, `domain` y
+        `filter` (`motor/model/rules.py`).
+      parameters:
+        - $ref: "#/components/parameters/ModelId"
+      responses:
+        "200":
+          description: Reglas del modelo, en orden.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuleListEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      tags: [models]
+      operationId: createRule
+      summary: Añade una regla con nombre a un modelo.
+      description: |
+        La regla viaja por query (ADR-016 §10: sin cuerpo JSON). Los `params` de
+        cada tipo se codifican como valores JSON en la query: `values` para
+        `map` y `allowed` para `domain`. Una columna que no exista en la entidad
+        es `bad_request`; un nombre de regla ya usado es `invalid_state` (409).
+      parameters:
+        - $ref: "#/components/parameters/ModelId"
+        - name: name
+          in: query
+          required: true
+          description: Nombre único de la regla dentro del modelo.
+          schema:
+            type: string
+            minLength: 1
+        - name: type
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/RuleType"
+        - name: column
+          in: query
+          required: true
+          description: Columna de la entidad sobre la que actúa la regla.
+          schema:
+            type: string
+        - name: to
+          in: query
+          required: false
+          description: Destino de `rename` (nuevo nombre) o de `cast` (`number`/`text`).
+          schema:
+            type: string
+        - name: values
+          in: query
+          required: false
+          description: Mapa origen→destino para `map`, como JSON.
+          schema:
+            type: string
+          example: '{" Cusco ":"Cusco"}'
+        - name: allowed
+          in: query
+          required: false
+          description: Valores permitidos para `domain`, como JSON.
+          schema:
+            type: string
+          example: '["Hecho","En curso"]'
+        - name: equals
+          in: query
+          required: false
+          description: Valor conservado por `filter`.
+          schema:
+            type: string
+      responses:
+        "201":
+          description: Regla creada.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuleEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/InvalidState"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/models/{model_id}/rules/{name}:
+    delete:
+      tags: [models]
+      operationId: deleteRule
+      summary: Borra una regla de un modelo por su nombre.
+      parameters:
+        - $ref: "#/components/parameters/ModelId"
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+      responses:
+        "200":
+          description: Regla borrada.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuleDeleteEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/diff:
+    get:
+      tags: [runs]
+      operationId: diffRuns
+      summary: Compara dos ejecuciones por su huella.
+      parameters:
+        - name: before
+          in: query
+          required: true
+          schema:
+            type: integer
+        - name: after
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Resultado de la comparación.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiffEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/orphans:
+    get:
+      tags: [runs]
+      operationId: findOrphans
+      summary: Informe de huérfanos entre dos entradas de la bandeja.
+      parameters:
+        - name: left
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$"
+        - name: right
+          in: query
+          required: true
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$"
+        - name: on
+          in: query
+          required: true
+          description: Columna de unión en `left`.
+          schema:
+            type: string
+        - name: right_on
+          in: query
+          required: false
+          description: Columna de unión en `right`. Por defecto, la de `on`.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Filas de `left` sin correspondencia en `right` (máximo 50).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrphansEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+components:
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Número máximo de elementos devueltos.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 500
+        default: 50
+    JobId:
+      name: job_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    RunId:
+      name: run_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    ModelId:
+      name: model_id
+      in: path
+      required: true
+      schema:
+        type: integer
+
+  responses:
+    Unauthorized:
+      description: "`unauthorized` (401): falta un token Bearer válido cuando la autenticación está configurada."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    BadRequest:
+      description: "`bad_request` (400): payload o parámetros inválidos."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    NotFound:
+      description: "`not_found` (404): el recurso no existe."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    InvalidState:
+      description: "`invalid_state` (409): el estado actual no admite la acción."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    PayloadTooLarge:
+      description: "`payload_too_large` (413): el cuerpo supera los 16 MiB."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    InternalError:
+      description: "`internal_error` (500): fallo no accionable por el cliente."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    Unavailable:
+      description: "`unavailable` (503): el servicio no puede responder ahora."
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+
+  schemas:
+    ApiVersion:
+      type: string
+      const: v1
+
+    ErrorCode:
+      type: string
+      description: Conjunto cerrado de códigos de error (ADR-016 §3).
+      enum:
+        - bad_request
+        - not_found
+        - method_not_allowed
+        - invalid_state
+        - payload_too_large
+        - internal_error
+        - unavailable
+
+    Error:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+          description: Texto para humanos. El cliente no debe parsearlo.
+
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [api_version, ok, error]
+      properties:
+        api_version:
+          $ref: "#/components/schemas/ApiVersion"
+        ok:
+          type: boolean
+          const: false
+        error:
+          $ref: "#/components/schemas/Error"
+
+    JobState:
+      type: string
+      description: Estados reales del motor (`motor/storage/schema.py`).
+      enum:
+        - claimed
+        - queued
+        - running
+        - committed
+        - archived
+        - failed
+        - quarantined
+        - cancelled
+        - deferred
+
+    Job:
+      type: object
+      additionalProperties: false
+      description: |
+        Proyección explícita del trabajo. Nunca incluye `lease_until`,
+        `worker_id` ni rutas del sistema de ficheros.
+      required:
+        - job_id
+        - state
+        - attempt
+        - created_at
+        - started_at
+        - cancel_requested
+        - deferred_reason
+      properties:
+        job_id:
+          type: string
+        state:
+          $ref: "#/components/schemas/JobState"
+        attempt:
+          type: integer
+        created_at:
+          type: [number, "null"]
+          description: Epoch en segundos.
+        started_at:
+          type: [number, "null"]
+          description: Epoch en segundos.
+        cancel_requested:
+          type: boolean
+        deferred_reason:
+          type: [string, "null"]
+        run_id:
+          type: [string, "null"]
+          description: Presente solo en el detalle del trabajo.
+
+    Health:
+      type: object
+      additionalProperties: false
+      required: [status, api_version, database]
+      properties:
+        status:
+          type: string
+          const: ok
+        api_version:
+          $ref: "#/components/schemas/ApiVersion"
+        database:
+          type: string
+          const: ok
+
+    HealthEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: "#/components/schemas/Health"
+
+    JobListData:
+      type: object
+      additionalProperties: false
+      required: [jobs, count]
+      properties:
+        jobs:
+          type: array
+          items:
+            $ref: "#/components/schemas/Job"
+        count:
+          type: integer
+
+    JobListEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: "#/components/schemas/JobListData"
+
+    JobEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: "#/components/schemas/Job"
+
+    JobCancelData:
+      type: object
+      additionalProperties: false
+      required: [job_id, cancel_requested]
+      properties:
+        job_id:
+          type: string
+        cancel_requested:
+          type: boolean
+          const: true
+
+    JobCancelEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: "#/components/schemas/JobCancelData"
+
+    JobRetryData:
+      type: object
+      additionalProperties: false
+      required: [job_id, state]
+      properties:
+        job_id:
+          type: string
+        state:
+          type: string
+          const: queued
+
+    JobRetryEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: "#/components/schemas/JobRetryData"
+
+    UploadData:
+      type: object
+      additionalProperties: false
+      required: [accepted, name, size_bytes]
+      properties:
+        accepted:
+          type: boolean
+          const: true
+        name:
+          type: string
+        size_bytes:
+          type: integer
+          description: Bytes realmente recibidos, no los declarados.
+
+    UploadEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: "#/components/schemas/UploadData"
+
+    ColumnProfile:
+      type: object
+      additionalProperties: true
+      required:
+        - name
+        - nulls
+        - unique
+        - duplicates
+        - inferred_type
+        - numeric_min
+        - numeric_max
+      properties:
+        name:
+          type: string
+        nulls:
+          type: integer
+        unique:
+          type: integer
+        duplicates:
+          type: integer
+        inferred_type:
+          type: string
+        numeric_min:
+          type: [number, "null"]
+        numeric_max:
+          type: [number, "null"]
+
+    ProfileData:
+      type: object
+      additionalProperties: false
+      required: [file, columns, rows, note, profile]
+      properties:
+        file:
+          type: string
+        columns:
+          type: array
+          items:
+            type: string
+        rows:
+          type: integer
+        note:
+          type: string
+        profile:
+          type: array
+          items:
+            $ref: "#/components/schemas/ColumnProfile"
+
+    ProfileEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: "#/components/schemas/ProfileData"
+
+    Dataset:
+      type: object
+      additionalProperties: false
+      required: [run_id, dataset, committed_at, manifest_present]
+      properties:
+        run_id:
+          type: string
+        dataset:
+          type: string
+        committed_at:
+          type: [number, "null"]
+          description: Epoch en segundos.
+        manifest_present:
+          type: boolean
+
+    DatasetListData:
+      type: object
+      additionalProperties: false
+      required: [datasets, count]
+      properties:
+        datasets:
+          type: array
+          items:
+            $ref: "#/components/schemas/Dataset"
+        count:
+          type: integer
+
+    DatasetListEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: "#/components/schemas/DatasetListData"
+
+    ManifestEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              additionalProperties: true
+              description: Contenido literal del `manifest.json` de la versión.
+
+    ModelSummary:
+      type: object
+      additionalProperties: false
+      required: [model_id, name, version, entities]
+      properties:
+        model_id:
+          type: integer
+        name:
+          type: string
+        version:
+          type: integer
+        entities:
+          type: array
+          items:
+            type: string
+
+    Attribute:
+      type: object
+      additionalProperties: false
+      required: [name, type, nullable]
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+        nullable:
+          type: boolean
+
+    Entity:
+      type: object
+      additionalProperties: false
+      required: [entity_id, name, key, attributes]
+      properties:
+        entity_id:
+          type: integer
+        name:
+          type: string
+        key:
+          type: array
+          items:
+            type: string
+        attributes:
+          type: array
+          items:
+            $ref: "#/components/schemas/Attribute"
+
+    Model:
+      type: object
+      additionalProperties: false
+      required: [model_id, name, version, entities]
+      properties:
+        model_id:
+          type: integer
+        name:
+          type: string
+        version:
+          type: integer
+        entities:
+          type: array
+          items:
+            $ref: "#/components/schemas/Entity"
+
+    ModelListData:
+      type: object
+      additionalProperties: false
+      required: [models, count]
+      properties:
+        models:
+          type: array
+          items:
+            $ref: "#/components/schemas/ModelSummary"
+        count:
+          type: integer
+
+    ModelListEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: "#/components/schemas/ModelListData"
+
+    RuleType:
+      type: string
+      description: Tipos de regla admitidos (`motor/model/rules.py`).
+      enum:
+        - rename
+        - cast
+        - map
+        - domain
+        - filter
+
+    RuleParams:
+      type: object
+      description: |
+        Campos propios del tipo, y solo esos. `rename`/`cast` usan `to`; `map`
+        usa `values`; `domain` usa `allowed`; `filter` usa `equals`.
+      properties:
+        to:
+          type: [string, "null"]
+        values:
+          type: object
+          additionalProperties:
+            type: string
+        allowed:
+          type: array
+          items:
+            type: string
+        equals:
+          type: [string, "null"]
+
+    Rule:
+      type: object
+      additionalProperties: false
+      required: [name, type, column, params]
+      properties:
+        name:
+          type: string
+        type:
+          $ref: "#/components/schemas/RuleType"
+        column:
+          type: string
+        params:
+          $ref: "#/components/schemas/RuleParams"
+
+    RuleCreated:
+      type: object
+      additionalProperties: false
+      required: [rule_id, model_id, name, type, column, params]
+      properties:
+        rule_id:
+          type: integer
+        model_id:
+          type: integer
+        name:
+          type: string
+        type:
+          $ref: "#/components/schemas/RuleType"
+        column:
+          type: string
+        params:
+          $ref: "#/components/schemas/RuleParams"
+
+    RuleListData:
+      type: object
+      additionalProperties: false
+      required: [rules, count]
+      properties:
+        rules:
+          type: array
+          items:
+            $ref: "#/components/schemas/Rule"
+        count:
+          type: integer
+
+    RuleListEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: "#/components/schemas/RuleListData"
+
+    RuleEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: "#/components/schemas/RuleCreated"
+
+    RuleDeleteData:
+      type: object
+      additionalProperties: false
+      required: [model_id, name, deleted]
+      properties:
+        model_id:
+          type: integer
+        name:
+          type: string
+        deleted:
+          type: boolean
+          const: true
+
+    RuleDeleteEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: "#/components/schemas/RuleDeleteData"
+
+    ModelEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: "#/components/schemas/Model"
+
+    Run:
+      type: object
+      additionalProperties: false
+      required: [run_id, created_at, output, rows, columns, hash]
+      properties:
+        run_id:
+          type: integer
+        created_at:
+          type: [number, "null"]
+          description: Epoch en segundos.
+        output:
+          type: string
+        rows:
+          type: integer
+        columns:
+          type: array
+          items:
+            type: string
+        hash:
+          type: string
+
+    RunListData:
+      type: object
+      additionalProperties: false
+      required: [runs, count]
+      properties:
+        runs:
+          type: array
+          items:
+            $ref: "#/components/schemas/Run"
+        count:
+          type: integer
+
+    RunListEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: "#/components/schemas/RunListData"
+
+    RunCreateData:
+      type: object
+      additionalProperties: false
+      required: [run_id, model_id, columns, rows_out, hash]
+      properties:
+        run_id:
+          type: integer
+        model_id:
+          type: integer
+        columns:
+          type: array
+          items:
+            type: string
+        rows_out:
+          type: integer
+        hash:
+          type: string
+
+    RunCreateEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: "#/components/schemas/RunCreateData"
+
+    DiffData:
+      type: object
+      additionalProperties: false
+      required: [changed, reason, rows_before, rows_after]
+      properties:
+        changed:
+          type: boolean
+        reason:
+          type: [string, "null"]
+        rows_before:
+          type: integer
+        rows_after:
+          type: integer
+
+    DiffEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: "#/components/schemas/DiffData"
+
+    OrphansData:
+      type: object
+      additionalProperties: false
+      required: [columns, rows_out, orphans]
+      properties:
+        columns:
+          type: array
+          items:
+            type: string
+        rows_out:
+          type: integer
+        orphans:
+          type: array
+          description: Hasta 50 filas de `left` sin correspondencia en `right`.
+          items:
+            type: array
+            items: {}
+
+    OrphansEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              $ref: "#/components/schemas/OrphansData"
+
+    SuccessEnvelope:
+      type: object
+      additionalProperties: false
+      required: [api_version, ok, data]
+      properties:
+        api_version:
+          $ref: "#/components/schemas/ApiVersion"
+        ok:
+          type: boolean
+          const: true
+        data:
+          description: Carga útil específica del endpoint.

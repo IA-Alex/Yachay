@@ -1,0 +1,61 @@
+[project]
+name = "yachay-local-data-modeling"
+version = "0.1.0"
+description = "Motor local de modelado de información con transformaciones y modelos reutilizables"
+readme = "README.md"
+authors = [{ name = "Panda", email = "panda@machiyotl.com" }]
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "duckdb==1.5.6",
+    "odfpy==1.4.1",
+    "openpyxl==3.1.5",
+    "pyarrow==26.0.1",
+    "PyMuPDF==1.26.7",
+    "python-docx==1.2.0",
+]
+
+[project.scripts]
+yachay = "motor.__main__:main"
+yachay-desktop = "yachay_desktop.app:main"
+
+[dependency-groups]
+dev = [
+    "coverage>=7.6",
+    "ruff>=0.9",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/motor", "desktop/yachay_desktop"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/motor/defaults.toml" = "motor/defaults.toml"
+
+[tool.uv]
+override-dependencies = ["filelock>=4.2.1"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP", "B"]
+
+[tool.coverage.run]
+branch = true
+source = ["src", "tests"]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+# `tests/` aporta solo validadores auxiliares; no forman parte del producto.
+omit = ["tests/unit/test_*.py", "tests/test_*.py", "tests/unit/openapi_min.py"]
+# The gate requires 100% coverage over `src`. The repo sits at 100%, so the gate
+# must fail the moment untested code lands: a laxer threshold silently admits the
+# regression it is meant to catch (the 95% here let `routes.py` drift to 99%
+# unnoticed). Unreachable defensive branches opt out explicitly with
+# `# pragma: no cover - defensa en profundidad`.
+fail_under = 100

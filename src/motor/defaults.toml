@@ -1,0 +1,12 @@
+# Yachay — motor de datos local.
+# Configuración por defecto, versionada. Su contenido entra en el job_key
+# como `config_hash` (spec sección 7, ADR-006). Todo cambio aquí produce un
+# resultado distinto y trazable.
+#
+# Valores de arranque, no calibrados (spec sección 16): no son resultados
+# de rendimiento medidos.
+
+[motor]
+admision_factor = 2.0      # free_bytes >= input_size * factor (sección 5)
+scanner_interval_s = 1.0   # intervalo del loop de escaneo (ADR-008)
+lease_ttl_s = 30.0         # TTL del lease del claim atómico (sección 6)
