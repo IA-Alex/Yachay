@@ -9,12 +9,14 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import tempfile
 import threading
 import unittest
 from http.client import HTTPConnection
 from pathlib import Path
+from unittest.mock import patch
 
 from motor.config import MotorConfig
 
@@ -78,6 +80,301 @@ class RunsApiTests(unittest.TestCase):
 
         self.assertEqual(status, 201)
         self.assertEqual(payload["data"]["rows_out"], 2)
+
+    def test_execution_report_is_generated_and_deleted_without_deleting_data(self):
+        self._upload("datos.csv", "id,valor\n1,a\n2,b\n")
+        model_id = self._model()
+        _, result = self.call("POST", f"/v1/models/{model_id}/runs?source=datos.csv")
+        run_id = result["data"]["run_id"]
+        report = self.config.paths.model_outputs / f"report-{run_id}.html"
+
+        status, generated = self.call(
+            "POST", f"/v1/models/{model_id}/runs/{run_id}/report"
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(generated["data"]["generated"])
+        self.assertTrue(report.is_file())
+        self.assertIn("Informe local", report.read_text())
+
+        status, deleted = self.call(
+            "DELETE", f"/v1/models/{model_id}/runs/{run_id}/report"
+        )
+        self.assertEqual(status, 200)
+        self.assertTrue(deleted["data"]["deleted"])
+        self.assertFalse(report.exists())
+        self.assertEqual(len(self.call("GET", f"/v1/models/{model_id}/runs")[1]
+                             ["data"]["runs"]), 1)
+
+    def test_report_generation_rejects_old_runs_without_output_artifacts(self):
+        from motor.storage.db import connect
+
+        self._upload("datos.csv", "id\n1\n")
+        model_id = self._model()
+        _, result = self.call("POST", f"/v1/models/{model_id}/runs?source=datos.csv")
+        conn = connect(self.config.paths.sqlite_path)
+        conn.execute("UPDATE runs SET artifact_path = NULL WHERE run_id = ?",
+                     (result["data"]["run_id"],))
+        conn.close()
+        status, response = self.call(
+            "POST", f"/v1/models/{model_id}/runs/{result['data']['run_id']}/report"
+        )
+        self.assertEqual(status, 409)
+        self.assertEqual(response["error"]["code"], "invalid_state")
+
+    def test_report_generation_rejects_traversal_and_missing_artifact(self):
+        from motor.storage.db import connect
+
+        self._upload("datos.csv", "id\n1\n")
+        model_id = self._model()
+        _, result = self.call("POST", f"/v1/models/{model_id}/runs?source=datos.csv")
+        run_id = result["data"]["run_id"]
+        conn = connect(self.config.paths.sqlite_path)
+        conn.execute("UPDATE runs SET artifact_path = '../outside' WHERE run_id = ?", (run_id,))
+        conn.close()
+        status, _ = self.call("POST", f"/v1/models/{model_id}/runs/{run_id}/report")
+        self.assertEqual(status, 409)
+        conn = connect(self.config.paths.sqlite_path)
+        conn.execute("UPDATE runs SET artifact_path = 'missing.parquet' WHERE run_id = ?",
+                     (run_id,))
+        conn.close()
+        status, _ = self.call("POST", f"/v1/models/{model_id}/runs/{run_id}/report")
+        self.assertEqual(status, 409)
+
+    def test_report_generation_maps_corrupt_artifact_to_unavailable(self):
+
+        self._upload("datos.csv", "id\n1\n")
+        model_id = self._model()
+        _, result = self.call("POST", f"/v1/models/{model_id}/runs?source=datos.csv")
+        run_id = result["data"]["run_id"]
+        artifact = self.config.paths.model_outputs / f"run-{run_id}.parquet"
+        artifact.write_bytes(b"not parquet")
+        status, response = self.call("POST", f"/v1/models/{model_id}/runs/{run_id}/report")
+        self.assertEqual(status, 503)
+        self.assertEqual(response["error"]["code"], "unavailable")
+        self.assertFalse((self.config.paths.model_outputs / f"report-{run_id}.html").exists())
+
+    def test_report_routes_hide_missing_runs_and_other_models(self):
+        self._upload("datos.csv", "id\n1\n")
+        model_id = self._model()
+        status, _ = self.call("POST", f"/v1/models/{model_id}/runs/999/report")
+        self.assertEqual(status, 404)
+        _, result = self.call("POST", f"/v1/models/{model_id}/runs?source=datos.csv")
+        other_id = self._model("datos.csv", "otro")
+        status, _ = self.call(
+            "DELETE", f"/v1/models/{other_id}/runs/{result['data']['run_id']}/report"
+        )
+        self.assertEqual(status, 404)
+        status, _ = self.call("DELETE", f"/v1/models/{model_id}/runs/999/report")
+        self.assertEqual(status, 404)
+
+    def test_report_delete_maps_permission_error(self):
+        self._upload("datos.csv", "id\n1\n")
+        model_id = self._model()
+        _, result = self.call("POST", f"/v1/models/{model_id}/runs?source=datos.csv")
+        run_id = result["data"]["run_id"]
+        self.call("POST", f"/v1/models/{model_id}/runs/{run_id}/report")
+        report = self.config.paths.model_outputs / f"report-{run_id}.html"
+        original = Path.unlink
+
+        def fail_report(path, *args, **kwargs):
+            if path == report:
+                raise PermissionError("locked")
+            return original(path, *args, **kwargs)
+
+        with patch.object(Path, "unlink", fail_report):
+            status, response = self.call(
+                "DELETE", f"/v1/models/{model_id}/runs/{run_id}/report"
+            )
+        self.assertEqual(status, 503)
+        self.assertEqual(response["error"]["code"], "unavailable")
+
+    def test_assistant_json_body_rejects_wrong_media_type_invalid_or_ambiguous_json(self):
+        cases = [
+            ("{}", {"Content-Type": "text/plain"}),
+            ("{", {"Content-Type": "application/json"}),
+            ('{"proposal":{},"proposal":{}}', {"Content-Type": "application/json"}),
+            ("[]", {"Content-Type": "application/json"}),
+            ("[" * 1500 + "0" + "]" * 1500,
+             {"Content-Type": "application/json"}),
+        ]
+        for body, headers in cases:
+            with self.subTest(body=body, headers=headers):
+                status, _ = self.call(
+                    "POST", "/v1/models/1/assistant/apply", body=body, headers=headers
+                )
+                self.assertEqual(status, 400)
+
+    def test_assistant_endpoints_reject_invalid_payload_shapes(self):
+        cases = [
+            ("/v1/models/1/assistant/proposals", {"source": "x.csv"}),
+            ("/v1/models/1/assistant/proposals", {"source": [], "instruction": "x"}),
+            ("/v1/models/1/assistant/apply", {"extra": 1}),
+        ]
+        for path, payload in cases:
+            with self.subTest(path=path, payload=payload):
+                status, _ = self.call(
+                    "POST", path, body=json.dumps(payload),
+                    headers={"Content-Type": "application/json"},
+                )
+                self.assertEqual(status, 400)
+
+    def test_assistant_proposal_rejects_missing_unsupported_or_unrelated_source(self):
+        self._upload("datos.csv", "id\n1\n")
+        self._upload("otro.csv", "unrelated\nx\n")
+        self._upload("bad.png", "x\n")
+        model_id = self._model()
+        for source, expected in (("missing.csv", 404), ("bad.png", 400), ("otro.csv", 400)):
+            status, _ = self.call(
+                "POST", f"/v1/models/{model_id}/assistant/proposals",
+                body=json.dumps({"source": source, "instruction": "normaliza"}),
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(status, expected)
+
+    def test_report_is_not_exposed_for_another_model(self):
+        self._upload("datos.csv", "id\n1\n")
+        first = self._model("datos.csv", "uno")
+        _, result = self.call("POST", f"/v1/models/{first}/runs?source=datos.csv")
+        second = self._model("datos.csv", "dos")
+        status, _ = self.call(
+            "POST", f"/v1/models/{second}/runs/{result['data']['run_id']}/report"
+        )
+        self.assertEqual(status, 404)
+
+    def test_deleting_a_missing_report_returns_not_found(self):
+        self._upload("datos.csv", "id\n1\n")
+        model_id = self._model()
+        _, result = self.call("POST", f"/v1/models/{model_id}/runs?source=datos.csv")
+        status, _ = self.call(
+            "DELETE", f"/v1/models/{model_id}/runs/{result['data']['run_id']}/report"
+        )
+        self.assertEqual(status, 404)
+
+    def test_assistant_proposal_needs_provider_key_and_does_not_change_model(self):
+        self._upload("datos.csv", "id,value\n1,PRIVATE_ROW_VALUE\n")
+        model_id = self._model()
+        payload = json.dumps({"source": "datos.csv", "instruction": "convierte id a número"})
+        with patch.dict(os.environ, {}, clear=True):
+            status, response = self.call(
+                "POST", f"/v1/models/{model_id}/assistant/proposals", body=payload,
+                headers={"Content-Type": "application/json"},
+            )
+        self.assertEqual(status, 503)
+        self.assertEqual(response["error"]["code"], "unavailable")
+        self.assertEqual(self.call("GET", "/v1/models")[1]["data"]["models"][0]["version"], 1)
+
+    def test_assistant_provider_receives_profile_metadata_without_rows(self):
+        self._upload("datos.csv", "id,value\n1,PRIVATE_ROW_VALUE\n")
+        model_id = self._model()
+        proposal = {"summary": "Convertir id", "rules": [{
+            "name": "id_number", "type": "cast", "column": "id",
+            "params": {"to": "number"},
+        }]}
+
+        class ProviderResponse:
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self, _limit):
+                return json.dumps({"choices": [{"message": {
+                    "content": json.dumps(proposal),
+                }}]}).encode()
+
+        with patch.dict(os.environ, {"DEEPINFRA_API_KEY": "test-secret"}), \
+                patch("motor.assistant.urllib.request.urlopen",
+                      return_value=ProviderResponse()) as opened:
+            status, response = self.call(
+                "POST", f"/v1/models/{model_id}/assistant/proposals",
+                body=json.dumps({"source": "datos.csv", "instruction": "convierte id"}),
+                headers={"Content-Type": "application/json"},
+            )
+        self.assertEqual(status, 200)
+        self.assertEqual(response["data"]["proposal"], proposal)
+        sent = opened.call_args.args[0].data.decode()
+        self.assertIn("id", sent)
+        self.assertNotIn("PRIVATE_ROW_VALUE", sent)
+
+    def test_accepting_a_proposal_creates_new_version_without_running_it(self):
+        self._upload("datos.csv", "id,value\n1,a\n")
+        model_id = self._model()
+        proposal = {"summary": "Convertir id", "rules": [{
+            "name": "id_number", "type": "cast", "column": "id",
+            "params": {"to": "number"},
+        }]}
+        status, response = self.call(
+            "POST", f"/v1/models/{model_id}/assistant/apply",
+            body=json.dumps({"proposal": proposal}),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 201)
+        new_id = response["data"]["model_id"]
+        self.assertEqual(response["data"]["version"], 2)
+        self.assertEqual(len(self.call("GET", f"/v1/models/{model_id}/runs")[1]
+                             ["data"]["runs"]), 0)
+        self.assertEqual(self.call("GET", f"/v1/models/{new_id}/rules")[1]
+                         ["data"]["rules"][0]["name"], "id_number")
+        self.assertEqual(len(self.call("GET", f"/v1/models/{model_id}/rules")[1]
+                             ["data"]["rules"]), 0)
+
+    def test_accepting_from_stale_model_id_clones_latest_version(self):
+        self._upload("datos.csv", "id\n1\n")
+        model_id = self._model()
+
+        def apply(name):
+            proposal = {"summary": "Regla", "rules": [{
+                "name": name, "type": "cast", "column": "id",
+                "params": {"to": "number"},
+            }]}
+            status, payload = self.call(
+                "POST", f"/v1/models/{model_id}/assistant/apply",
+                body=json.dumps({"proposal": proposal}),
+                headers={"Content-Type": "application/json"},
+            )
+            self.assertEqual(status, 201)
+            return payload["data"]
+
+        first = apply("id_number")
+        second = apply("id_text")
+        self.assertEqual((first["version"], second["version"]), (2, 3))
+        names = [rule["name"] for rule in self.call(
+            "GET", f"/v1/models/{second['model_id']}/rules"
+        )[1]["data"]["rules"]]
+        self.assertEqual(names, ["id_number", "id_text"])
+
+    def test_accepting_invalid_proposal_does_not_create_version(self):
+        self._upload("datos.csv", "id\n1\n")
+        model_id = self._model()
+        body = {"proposal": {"summary": "invalid", "rules": [{
+            "name": "bad", "type": "execute", "column": "id", "params": {},
+        }]}}
+        status, _ = self.call(
+            "POST", f"/v1/models/{model_id}/assistant/apply", body=json.dumps(body),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 400)
+        status, _ = self.call(
+            "POST", f"/v1/models/{model_id}/assistant/apply",
+            body=json.dumps({"proposal": {"summary": "sin reglas", "rules": []}}),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(self.call("GET", "/v1/models")[1]["data"]["models"][0]["version"], 1)
+
+    def test_assistant_json_body_is_size_limited(self):
+        self._upload("datos.csv", "id\n1\n")
+        model_id = self._model()
+        body = json.dumps({"proposal": {"summary": "x" * 33000, "rules": []}})
+        status, response = self.call(
+            "POST", f"/v1/models/{model_id}/assistant/apply", body=body,
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 413)
+        self.assertEqual(response["error"]["code"], "payload_too_large")
 
     def test_listing_runs_shows_them_newest_first(self):
         self._upload("datos.csv", "id,valor\n1,a\n")

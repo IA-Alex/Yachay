@@ -13,10 +13,12 @@ Rutas:
 from __future__ import annotations
 
 import json
+import stat
 import tempfile
 import unittest
 from http.client import HTTPConnection
 from pathlib import Path
+from unittest import mock
 from urllib.parse import quote
 
 from motor.config import MotorConfig
@@ -132,6 +134,37 @@ class ModelsApiTests(unittest.TestCase):
         data = payload["data"]
         self.assertEqual(data["rows"], 2)
         self.assertEqual(len(data["profile"]), 2)
+
+    def test_model_input_survives_worker_consuming_inbox(self):
+        self._upload("datos.csv", "id,valor\n1,a\n")
+        inbox = self.config.paths.inbox / "datos.csv"
+        retained = self.config.paths.model_inputs / "datos.csv"
+        self.assertTrue(inbox.samefile(retained))
+        self.assertEqual(stat.S_IMODE(retained.stat().st_mode), 0o640)
+
+        # Exercise the actual worker lifecycle, not only an unlink simulation.
+        from motor.worker import Worker
+
+        worker = Worker(self.config)
+        try:
+            self.assertIsNotNone(worker.run_once())
+        finally:
+            worker.conn.close()
+        self.assertFalse(inbox.exists())
+        self.assertTrue(retained.is_file())
+        status, profile = self.call("GET", "/v1/profile?name=datos.csv")
+        self.assertEqual(status, 200)
+        self.assertEqual(profile["data"]["rows"], 1)
+        status, model = self.call("POST", "/v1/models?name=m&source=datos.csv")
+        self.assertEqual(status, 201)
+        self.assertEqual(model["data"]["name"], "m")
+
+    def test_upload_link_failure_rolls_back_retained_source_and_lock(self):
+        with mock.patch("motor.api.routes.os.link", side_effect=OSError("link failed")):
+            status, _ = self._upload("fallo.csv", "id\n1\n")
+        self.assertEqual(status, 500)
+        self.assertFalse((self.config.paths.model_inputs / "fallo.csv").exists())
+        self.assertFalse((self.config.paths.inbox / "fallo.csv.part").exists())
 
     def test_profiling_a_missing_file_is_not_found(self):
         status, payload = self.call("GET", "/v1/profile?name=nada.csv")

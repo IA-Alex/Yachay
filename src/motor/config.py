@@ -24,36 +24,43 @@ class MotorPaths:
 
     root: Path
     inbox: Path
+    model_inputs: Path
     processing: Path
     failed: Path
     quarantine: Path
     tmp: Path
     processed: Path
+    model_outputs: Path
     sqlite_path: Path
 
     @classmethod
     def from_root(cls, root: Path) -> MotorPaths:
         root = Path(root)
         data = root / "data"
+        data.mkdir(mode=0o750, parents=True, exist_ok=True)
         paths = cls(
             root=root,
             inbox=data / "inbox",
+            model_inputs=data / "model-inputs",
             processing=data / "processing",
             failed=data / "failed",
             quarantine=data / "quarantine",
             tmp=data / "tmp",
             processed=data / "processed",
+            model_outputs=data / "model-outputs",
             sqlite_path=data / "motor.sqlite3",
         )
         for directory in (
             paths.inbox,
+            paths.model_inputs,
             paths.processing,
             paths.failed,
             paths.quarantine,
             paths.tmp,
             paths.processed,
+            paths.model_outputs,
         ):
-            directory.mkdir(parents=True, exist_ok=True)
+            directory.mkdir(mode=0o750, parents=True, exist_ok=True)
         return paths
 
 

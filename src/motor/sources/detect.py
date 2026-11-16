@@ -16,6 +16,12 @@ import enum
 import zipfile
 from pathlib import Path
 
+from motor.limits import (
+    MAX_ARCHIVE_ENTRIES,
+    MAX_ARCHIVE_EXPANDED_BYTES,
+    MAX_SOURCE_BYTES,
+)
+
 
 class Kind(enum.Enum):
     """Familia de una entrada."""
@@ -35,6 +41,14 @@ _DOCUMENT_EXT = {".txt": "txt", ".docx": "docx", ".pdf": "pdf"}
 def format_of(path: Path) -> str:
     """Devuelve el formato lógico ('csv', 'xlsx', …, 'docx', 'pdf')."""
     suffix = Path(path).suffix.lower()
+    try:
+        size = Path(path).stat().st_size
+    except OSError:
+        size = None
+    if size is not None and size > MAX_SOURCE_BYTES:
+        raise UnsupportedFormat(
+            f"{Path(path).name} excede el límite de {MAX_SOURCE_BYTES // (1024 * 1024)} MiB"
+        )
     if suffix in _TABLE_EXT:
         return _TABLE_EXT[suffix]
     if suffix in _DOCUMENT_EXT:
@@ -77,7 +91,18 @@ def _check_container(path: Path, fmt: str) -> None:
     """
     try:
         with zipfile.ZipFile(path) as archive:
-            names = set(archive.namelist())
+            infos = archive.infolist()
+            if len(infos) > MAX_ARCHIVE_ENTRIES:
+                raise UnsupportedFormat(f"{path.name} contiene demasiadas partes ZIP")
+            expanded = sum(info.file_size for info in infos)
+            if expanded > MAX_ARCHIVE_EXPANDED_BYTES:
+                raise UnsupportedFormat(
+                    f"{path.name} excede el límite expandido de ZIP "
+                    f"({MAX_ARCHIVE_EXPANDED_BYTES // (1024 * 1024)} MiB)"
+                )
+            names = {info.filename for info in infos}
+    except UnsupportedFormat:
+        raise
     except (zipfile.BadZipFile, OSError) as exc:
         raise UnsupportedFormat(
             f"{path.name} no es un archivo {fmt} válido"

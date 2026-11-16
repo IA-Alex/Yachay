@@ -20,7 +20,7 @@ JOB_STATES = (
     "deferred",
 )
 
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS jobs (
@@ -91,7 +91,17 @@ def create_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA)
     conn.executescript(_MODEL_SCHEMA)
     conn.executescript(_SCHEMA_VERSION)
+    _migrate_run_artifacts(conn)
     _migrate_schema(conn)
+
+
+def _migrate_run_artifacts(conn: sqlite3.Connection) -> None:
+    """Add optional artifact metadata without rewriting existing runs."""
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(runs)")}
+    for name, kind in (("artifact_path", "TEXT"), ("source_name", "TEXT"),
+                       ("source_sha256", "TEXT")):
+        if name not in columns:
+            conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {kind}")
 
 
 def _migrate_schema(conn: sqlite3.Connection) -> None:
@@ -208,13 +218,13 @@ CREATE INDEX IF NOT EXISTS idx_runs_model ON runs(model_id);
 """
 
 # Versión del esquema, para que una futura migración sepa de dónde parte.
-# v1: motor de ingesta. v2: modelado (entidades, reglas, cruces). v3: ejecuciones.
+# v1: ingesta. v2: modelado. v3: ejecuciones. v4: metadatos de Parquet local.
 _SCHEMA_VERSION = """
 CREATE TABLE IF NOT EXISTS schema_version (
     version    INTEGER NOT NULL,
     applied_at REAL NOT NULL DEFAULT 0
 );
 INSERT INTO schema_version (version, applied_at)
-SELECT 3, COALESCE(strftime('%s','now'),0)
+SELECT 4, COALESCE(strftime('%s','now'),0)
 WHERE NOT EXISTS (SELECT 1 FROM schema_version);
 """

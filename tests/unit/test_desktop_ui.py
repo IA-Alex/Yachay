@@ -465,6 +465,7 @@ class ClientAgainstRealApiTests(unittest.TestCase):
         inbox = self.config.paths.inbox
         if (inbox / "datos.csv").exists():
             (inbox / "datos.csv").unlink()
+        (self.config.paths.model_inputs / "datos.csv").unlink(missing_ok=True)
         if not (inbox / "datos.csv").exists():
             self.client.upload("datos.csv", csv)
         from motor.model import store
@@ -738,7 +739,7 @@ class AppRefreshBridgeTests(unittest.TestCase):
                     if pending is not None:
                         app.after_cancel(pending)
                         setattr(app, attr, None)
-                app.destroy()
+                app._on_close()
 
     def test_run_on_ui_executes_from_a_worker_thread(self):
         """El puente entrega lo que un hilo distinto encola."""
@@ -822,11 +823,11 @@ class AppSmokeTests(unittest.TestCase):
         cls.app._on_close()
         cls.tmp.cleanup()
 
-    def test_builds_the_seven_views(self):
+    def test_builds_the_nine_views(self):
         self.assertEqual(
             set(self.app.views),
-            {"status", "files", "model", "execute", "results",
-             "jobs", "datasets"},
+            {"status", "files", "model", "execute", "results", "visualizations",
+             "assistant", "jobs", "datasets"},
         )
 
     def test_every_view_has_a_freshness_indicator(self):

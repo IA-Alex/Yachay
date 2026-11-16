@@ -107,11 +107,25 @@ de huérfanos, no un editor de cruces persistidos.
 | Lectura Excel | `openpyxl` (`.xlsx`) | ✅ existe | Volcar hoja → DuckDB |
 | Lectura ODS | `odfpy` | ✅ existe | Volcar hoja → DuckDB |
 | Entrada CSV | `read_csv_auto` | ✅ existe | Sin cambios |
-| API | `http.server` sobre AF_UNIX | ✅ existe | 20 operaciones (ADR-016/OpenAPI) |
-| UI | tkinter/ttk | ✅ existe | 7 vistas (ADR-018/019) |
+| API | `http.server` sobre AF_UNIX | ✅ existe | 24 operaciones (registro + OpenAPI) |
+| UI | tkinter/ttk | ✅ existe | 9 vistas: operaciones, propuestas y visualizaciones |
 | Supervisión | systemd `--user` | ✅ existe | `Type=exec`, sin watchdog |
 | Logs | JSON a stdout → journald | ✅ existe | `log.py` |
-| Tests | `unittest` + `coverage` | ✅ existe | 470 pruebas, 100% |
+| Tests | `unittest` + `coverage` | ✅ existe | 535 pruebas, 7 omitidas, gate de cobertura 100% |
+
+### Asistencia y salidas visuales
+
+Las propuestas usan una allowlist de las cinco reglas deterministas existentes
+(`rename`, `cast`, `map`, `domain`, `filter`). DeepInfra recibe solo la
+instrucción y metadatos del perfil; la API valida la respuesta, la interfaz
+muestra la vista previa y la aceptación clona entidades, atributos, claves,
+reglas y cruces antes de añadir cambios. No se ejecuta automáticamente.
+
+Las ejecuciones nuevas guardan resultado Parquet en `data/model-outputs/` y
+metadatos opcionales en SQLite (migración aditiva v4). Los informes son HTML
+estáticos locales, con CSP sin recursos de red, SVG y tabla de datos. Se
+recomienda el informe para inspección; la salida tabular sigue disponible para
+análisis posterior. Informes y artefactos quedan ligados al operador local.
 
 **Dependencias de entrada:** `openpyxl` para `.xlsx` y `odfpy` para `.ods` ya
 están declaradas en `pyproject.toml`. No se añade ninguna dependencia de
@@ -138,7 +152,7 @@ transformación: **DuckDB sigue siendo el único motor** (ADR-002).
 | Persistencia (SQLite, Parquet, manifiesto) | ✅ | — |
 | Ingesta (scanner, cola, estados, leases, reconcile, GC) | ✅ | — |
 | API (envelope, rutas, servidor) | ✅ | Endpoints de modelo |
-| UI (7 vistas, tokens §18) | ✅ | Vistas de estado, carga, modelo, ejecución, resultados, trabajos y datasets |
+| UI (9 vistas, tokens §18) | ✅ | Estado, carga, modelo, ejecución, resultados, visualizaciones, propuestas, trabajos y datasets |
 | Infra (systemd, logging, límites) | ✅ | — |
 | **Motor de transformación con reglas** | ✅ | — |
 | **Catálogo de modelo (entidades, reglas, cruces)** | ✅ | — |

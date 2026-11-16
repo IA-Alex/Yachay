@@ -698,6 +698,15 @@ class InputUploadTests(ApiTestBase):
 
         self.assertEqual(target.read_bytes(), b"id\n1\n")
 
+    def test_save_atomic_does_not_remove_an_unowned_part_file(self):
+        target = self.config.paths.inbox / "owned.csv"
+        part = target.with_name(target.name + ".part")
+        part.write_bytes(b"otro escritor")
+        body = Body(stream=io.BytesIO(b"id\n1\n"), size=5)
+        with self.assertRaises(FileExistsError):
+            body.save_atomic(target)
+        self.assertEqual(part.read_bytes(), b"otro escritor")
+
 
 class DatasetsEndpointTests(ApiTestBase):
     """Read-only access to published datasets and their manifests."""

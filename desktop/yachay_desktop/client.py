@@ -292,6 +292,30 @@ class ApiClient:
             "POST", f"/v1/models/{model_id}/runs?source={quote(source, safe='')}"
         )
 
+    def generate_report(self, model_id: int, run_id: int) -> dict:
+        """Generate a local self-contained visual report for a stored run."""
+        return self._request("POST", f"/v1/models/{model_id}/runs/{run_id}/report")
+
+    def delete_report(self, model_id: int, run_id: int) -> dict:
+        """Delete the report file while retaining its execution data."""
+        return self._request("DELETE", f"/v1/models/{model_id}/runs/{run_id}/report")
+
+    def propose_model_rules(self, model_id: int, source: str, instruction: str) -> dict:
+        """Ask the bounded assistant for a preview; only schema/profile is sent out."""
+        body = json.dumps({"source": source, "instruction": instruction}).encode("utf-8")
+        return self._request(
+            "POST", f"/v1/models/{model_id}/assistant/proposals", body=body,
+            headers={"Content-Type": "application/json"},
+        )
+
+    def apply_model_proposal(self, model_id: int, proposal: dict) -> dict:
+        """Accept a reviewed proposal into a new, non-executed model version."""
+        body = json.dumps({"proposal": proposal}, ensure_ascii=False).encode("utf-8")
+        return self._request(
+            "POST", f"/v1/models/{model_id}/assistant/apply", body=body,
+            headers={"Content-Type": "application/json"},
+        )
+
     def diff(self, before: int, after: int) -> dict:
         """`GET /v1/diff?before=&after=` → compara dos ejecuciones."""
         return self._request("GET", f"/v1/diff?before={before}&after={after}")

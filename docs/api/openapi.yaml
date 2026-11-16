@@ -188,7 +188,7 @@ paths:
     post:
       tags: [inputs]
       operationId: uploadInput
-      summary: Deposita un archivo en la bandeja de entrada (`inbox/`).
+      summary: Publica un archivo para el worker y conserva la fuente para modelado.
       description: |
         La API **no crea un trabajo**: el escáner del worker admite el archivo en
         su propio ciclo, así que hay una sola vía de admisión (ADR-008) y la API
@@ -348,7 +348,7 @@ paths:
     post:
       tags: [models]
       operationId: createModel
-      summary: Crea un modelo perfiando un archivo ya depositado en `inbox/`.
+      summary: Crea un modelo perfilando un archivo ya cargado.
       parameters:
         - name: name
           in: query
@@ -359,7 +359,7 @@ paths:
         - name: source
           in: query
           required: true
-          description: Nombre simple del archivo en `inbox/`.
+          description: Nombre simple del archivo cargado; la fuente se conserva para modelado.
           schema:
             type: string
             pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$"
@@ -423,19 +423,19 @@ paths:
     post:
       tags: [runs]
       operationId: createRun
-      summary: Ejecuta un modelo sobre un archivo y guarda la huella.
+      summary: Ejecuta el modelo y conserva Parquet local y huella.
       parameters:
         - $ref: "#/components/parameters/ModelId"
         - name: source
           in: query
           required: true
-          description: Nombre simple del archivo en `inbox/`.
+          description: Nombre simple del archivo cargado; acepta cargas anteriores que sigan en `inbox/`.
           schema:
             type: string
             pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$"
       responses:
         "201":
-          description: Ejecución registrada con su huella.
+          description: Ejecución registrada con su huella y resultado local.
           content:
             application/json:
               schema:
@@ -448,6 +448,119 @@ paths:
           $ref: "#/components/responses/InvalidState"
         "500":
           $ref: "#/components/responses/InternalError"
+
+  /v1/models/{model_id}/runs/{run_id}/report:
+    parameters:
+      - $ref: "#/components/parameters/ModelId"
+      - name: run_id
+        in: path
+        required: true
+        description: Identificador de una ejecución del modelo.
+        schema:
+          type: integer
+          minimum: 1
+    post:
+      tags: [runs]
+      operationId: generateRunReport
+      summary: Genera o regenera un informe HTML local para una ejecución.
+      description: Usa Parquet y no carga recursos de red.
+      responses:
+        "200":
+          description: Informe generado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReportEnvelope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/InvalidState"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    delete:
+      tags: [runs]
+      operationId: deleteRunReport
+      summary: Borra el HTML generado y conserva los datos de la ejecución.
+      responses:
+        "200":
+          description: Informe borrado.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReportDeleteEnvelope"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /v1/models/{model_id}/assistant/proposals:
+    post:
+      tags: [models]
+      operationId: proposeModelRules
+      summary: Propone reglas registradas a partir de lenguaje natural y perfil.
+      parameters:
+        - $ref: "#/components/parameters/ModelId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [source, instruction]
+              properties:
+                source:
+                  type: string
+                instruction:
+                  type: string
+                  maxLength: 2000
+      responses:
+        "200":
+          description: Propuesta validada; no modifica el modelo.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistantProposalEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+
+  /v1/models/{model_id}/assistant/apply:
+    post:
+      tags: [models]
+      operationId: applyModelProposal
+      summary: Acepta una propuesta validada y crea una versión sin ejecutarla.
+      parameters:
+        - $ref: "#/components/parameters/ModelId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [proposal]
+              properties:
+                proposal:
+                  $ref: "#/components/schemas/AssistantProposal"
+      responses:
+        "201":
+          description: Nueva versión creada; las ejecuciones no se inician.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssistantApplyEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
 
   /v1/models/{model_id}/rules:
     get:
@@ -1159,6 +1272,60 @@ components:
         params:
           $ref: "#/components/schemas/RuleParams"
 
+    AssistantProposal:
+      type: object
+      additionalProperties: false
+      required: [summary, rules]
+      properties:
+        summary:
+          type: string
+          maxLength: 500
+        rules:
+          type: array
+          maxItems: 8
+          items:
+            $ref: "#/components/schemas/Rule"
+
+    AssistantProposalEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [proposal, operations]
+              properties:
+                proposal:
+                  $ref: "#/components/schemas/AssistantProposal"
+                operations:
+                  type: array
+                  items:
+                    type: object
+                    required: [type, params]
+                    properties:
+                      type:
+                        $ref: "#/components/schemas/RuleType"
+                      params:
+                        type: string
+
+    AssistantApplyEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [model_id, version, applied]
+              properties:
+                model_id:
+                  type: integer
+                version:
+                  type: integer
+                applied:
+                  type: boolean
+
     RuleCreated:
       type: object
       additionalProperties: false
@@ -1241,7 +1408,7 @@ components:
     Run:
       type: object
       additionalProperties: false
-      required: [run_id, created_at, output, rows, columns, hash]
+      required: [run_id, created_at, output, rows, columns, hash, artifact_available]
       properties:
         run_id:
           type: integer
@@ -1258,6 +1425,8 @@ components:
             type: string
         hash:
           type: string
+        artifact_available:
+          type: boolean
 
     RunListData:
       type: object
@@ -1297,6 +1466,34 @@ components:
           type: integer
         hash:
           type: string
+    ReportEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [run_id, generated]
+              properties:
+                run_id:
+                  type: integer
+                generated:
+                  type: boolean
+    ReportDeleteEnvelope:
+      allOf:
+        - $ref: "#/components/schemas/SuccessEnvelope"
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [run_id, deleted]
+              properties:
+                run_id:
+                  type: integer
+                deleted:
+                  type: boolean
 
     RunCreateEnvelope:
       allOf:

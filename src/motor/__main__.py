@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from motor.api.server import serve
@@ -92,6 +93,17 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     """Entrypoint: parse arguments and run the selected service."""
+    # Match the systemd units for standalone runs too; new data files are not
+    # world-readable by default.
+    previous_umask = os.umask(0o027)
+    try:
+        return _main(argv)
+    finally:
+        os.umask(previous_umask)
+
+
+def _main(argv: list[str] | None = None) -> int:
+    """Dispatch one CLI command while the private data umask is active."""
     args = build_parser().parse_args(argv)
 
     if args.command == "inspect":

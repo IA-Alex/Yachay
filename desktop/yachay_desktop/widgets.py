@@ -159,7 +159,6 @@ def make_button(
     *,
     kind: str = "secondary",
     state: str = "normal",
-    tooltip: str = "",
 ) -> tk.Button:
     """Botón plano, minimalista, con foco visible y estado deshabilitado claro.
 
@@ -199,8 +198,6 @@ def make_button(
         pady=SPACING.sm // 2,
         cursor="hand2" if enabled else "arrow",
     )
-    if tooltip:
-        _attach_tooltip(button, tooltip)
     return button
 
 
@@ -396,38 +393,3 @@ def responsive_wrap(widget: tk.Label, *, inset: int = 0) -> tk.Label:
     parent.bind("<Configure>", _resize, add="+")
     _resize()
     return widget
-
-
-def _attach_tooltip(widget: tk.Widget, text: str) -> None:
-    """Tooltip mínimo: aparece al pasar el ratón, sin dependencias."""
-    state = {"window": None}
-
-    def show(_event=None):
-        if state["window"] is not None:
-            return
-        x = widget.winfo_rootx() + 12
-        y = widget.winfo_rooty() + widget.winfo_height() + 4
-        window = tk.Toplevel(widget)
-        window.wm_overrideredirect(True)
-        window.wm_geometry(f"+{x}+{y}")
-        tk.Label(
-            window,
-            text=text,
-            background=PALETTE.surface_alt,
-            foreground=PALETTE.text,
-            font=TYPE.font(TYPE.size_sm),
-            padx=SPACING.sm,
-            pady=SPACING.xs,
-            highlightbackground=PALETTE.border,
-            highlightthickness=1,
-        ).pack()
-        state["window"] = window
-
-    def hide(_event=None):
-        if state["window"] is not None:
-            state["window"].destroy()
-            state["window"] = None
-
-    widget.bind("<Enter>", show, add="+")
-    widget.bind("<Leave>", hide, add="+")
-    widget.bind("<ButtonPress>", hide, add="+")

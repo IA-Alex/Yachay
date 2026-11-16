@@ -35,6 +35,7 @@ from yachay_desktop.ui_constants import (
     MAX_REQUEST_BYTES,
     REFRESH_MS,
 )
+from yachay_desktop.views.assistant import AssistantViewMixin
 from yachay_desktop.views.datasets import DatasetsViewMixin
 from yachay_desktop.views.execution import ExecutionViewMixin
 from yachay_desktop.views.files import FilesViewMixin
@@ -42,6 +43,7 @@ from yachay_desktop.views.jobs import JobsViewMixin
 from yachay_desktop.views.models import ModelsViewMixin
 from yachay_desktop.views.results import ResultsViewMixin
 from yachay_desktop.views.status import StatusViewMixin
+from yachay_desktop.views.visualizations import VisualizationsViewMixin
 from yachay_desktop.widgets import (
     SectionTitle,
     configure_ttk_styles,
@@ -53,14 +55,22 @@ __all__ = ["FUNCTION_CATALOG", "MAX_REQUEST_BYTES", "YachayApp", "main"]
 
 class YachayApp(
     StatusViewMixin, JobsViewMixin, DatasetsViewMixin, FilesViewMixin,
-    ModelsViewMixin, ExecutionViewMixin, ResultsViewMixin, tk.Tk,
+    ModelsViewMixin, ExecutionViewMixin, ResultsViewMixin, VisualizationsViewMixin,
+    AssistantViewMixin, tk.Tk,
 ):
     """Ventana principal de la interfaz de escritorio."""
 
-    def __init__(self, socket_path: Path, *, auto_start: bool = True):
+    def __init__(
+        self, socket_path: Path, *, auto_start: bool = True,
+        model_outputs_dir: Path | None = None,
+    ):
         super().__init__()
         self.client = ApiClient(socket_path)
         self.socket_path = socket_path
+        self.model_outputs_dir = (
+            Path(model_outputs_dir) if model_outputs_dir is not None
+            else Path(socket_path).parent / "model-outputs"
+        )
         self._auto_refresh = auto_start
         self._after_id: str | None = None
         self._last_error: Exception | None = None
@@ -125,6 +135,8 @@ class YachayApp(
             ("model", self._build_model_view),
             ("execute", self._build_execute_view),
             ("results", self._build_results_view),
+            ("visualizations", self._build_visualizations_view),
+            ("assistant", self._build_assistant_view),
             ("jobs", self._build_jobs_view),
             ("datasets", self._build_datasets_view),
         ):
@@ -164,6 +176,8 @@ class YachayApp(
             ("model", "Modelo"),
             ("execute", "Ejecutar"),
             ("results", "Resultados"),
+            ("visualizations", "Visualizaciones"),
+            ("assistant", "Propuestas"),
             ("jobs", "Cola de trabajos"),
             ("datasets", "Catálogo de datasets"),
         ):
@@ -268,7 +282,7 @@ class YachayApp(
         self.bind("<Control-r>", lambda _e: self.refresh())
         self.bind("<F5>", lambda _e: self.refresh())
         for index, name in enumerate(
-            ("status", "files", "model", "execute", "results",
+            ("status", "files", "model", "execute", "results", "visualizations", "assistant",
              "jobs", "datasets"), start=1
         ):
             self.bind(f"<Control-Key-{index}>", lambda _e, n=name: self.show_view(n))
@@ -497,7 +511,10 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.socket) if args.socket else Path(args.root) / "data" / "motor.sock"
     )
     try:
-        app = YachayApp(socket_path)
+        app = YachayApp(
+            socket_path,
+            model_outputs_dir=Path(args.root) / "data" / "model-outputs",
+        )
     except tk.TclError as exc:  # pragma: no cover - sin display
         print(f"No se pudo abrir la interfaz gráfica: {exc}", file=sys.stderr)
         return 1

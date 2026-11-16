@@ -20,6 +20,7 @@ RUFF=.venv/bin/ruff
 PYTHON=.venv/bin/python
 COVERAGE=.venv/bin/coverage
 
-"$RUFF" check src tests desktop
+"$RUFF" check src tests desktop scripts
+"$PYTHON" scripts/sync_api_docs.py
 "$COVERAGE" run -m unittest discover -s tests/unit -t .
 "$COVERAGE" report

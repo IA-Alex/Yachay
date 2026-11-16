@@ -9,6 +9,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from motor.sources import detect, documents, tables
 
@@ -60,6 +61,38 @@ class DetectTests(unittest.TestCase):
             p = Path(d) / "datos.xlsx"
             _write_xlsx(p, [["a", "b"], [1, 2]])
             self.assertEqual(detect.kind_of(p), detect.Kind.TABLE)
+
+    def test_rejects_archive_expansion_above_limit(self):
+        import zipfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "datos.xlsx"
+            with zipfile.ZipFile(p, "w") as archive:
+                archive.writestr("xl/workbook.xml", "ok")
+                archive.writestr("bulk.xml", "x" * 100)
+            with mock.patch("motor.sources.detect.MAX_ARCHIVE_EXPANDED_BYTES", 50):
+                with self.assertRaises(detect.UnsupportedFormat):
+                    detect.kind_of(p)
+
+    def test_rejects_too_many_archive_entries(self):
+        import zipfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "datos.xlsx"
+            with zipfile.ZipFile(p, "w") as archive:
+                archive.writestr("xl/workbook.xml", "ok")
+                archive.writestr("extra.xml", "ok")
+            with mock.patch("motor.sources.detect.MAX_ARCHIVE_ENTRIES", 1):
+                with self.assertRaises(detect.UnsupportedFormat):
+                    detect.kind_of(p)
+
+    def test_rejects_source_above_size_limit(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "datos.csv"
+            p.write_text("a,b\n", encoding="utf-8")
+            with mock.patch("motor.sources.detect.MAX_SOURCE_BYTES", 2):
+                with self.assertRaises(detect.UnsupportedFormat):
+                    detect.kind_of(p)
 
     def test_docx_is_a_document(self):
         with tempfile.TemporaryDirectory() as d:
@@ -138,6 +171,66 @@ class OdsTableTests(unittest.TestCase):
             self.assertEqual(table.columns, ["id", "nombre"])
             self.assertEqual(table.rows, [[1.0, "ana"], [2.0, "beto"]])
 
+    def test_rejects_repeated_columns_before_expanding_them(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "repeated.ods"
+            from odf.opendocument import OpenDocumentSpreadsheet
+            from odf.table import Table, TableCell, TableRow
+            from odf.text import P
+
+            doc = OpenDocumentSpreadsheet()
+            sheet = Table(name="Hoja1")
+            header = TableRow()
+            for text in ("a", "b"):
+                cell = TableCell()
+                cell.addElement(P(text=text))
+                header.addElement(cell)
+            repeated = TableRow()
+            cell = TableCell(numbercolumnsrepeated="100000000")
+            cell.addElement(P(text="x"))
+            repeated.addElement(cell)
+            sheet.addElement(header)
+            sheet.addElement(repeated)
+            doc.spreadsheet.addElement(sheet)
+            doc.save(str(p))
+
+            with self.assertRaises(detect.UnsupportedFormat):
+                tables.read(p)
+
+    def test_rejects_ods_cell_and_row_limits(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "datos.ods"
+            _write_ods(p, [["a", "b"], [1, 2]])
+            with mock.patch("motor.sources.tables.MAX_TABLE_CELLS", 1):
+                with self.assertRaises(detect.UnsupportedFormat):
+                    tables.read(p)
+            with mock.patch("motor.sources.tables.MAX_TABLE_ROWS", 1):
+                with self.assertRaises(detect.UnsupportedFormat):
+                    tables.read(p)
+
+    def test_rejects_nonpositive_ods_column_repeat(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "repeat-zero.ods"
+            from odf.opendocument import OpenDocumentSpreadsheet
+            from odf.table import Table, TableCell, TableRow
+            from odf.text import P
+
+            doc = OpenDocumentSpreadsheet()
+            sheet = Table(name="Hoja1")
+            row = TableRow()
+            for value, repeat in (("header", None), ("value", "0")):
+                cell = TableCell()
+                if repeat:
+                    cell.setAttribute("numbercolumnsrepeated", repeat)
+                cell.addElement(P(text=value))
+                row.addElement(cell)
+            sheet.addElement(row)
+            doc.spreadsheet.addElement(sheet)
+            doc.save(str(p))
+
+            with self.assertRaises(detect.UnsupportedFormat):
+                tables.read(p)
+
 
 class CsvTableTests(unittest.TestCase):
     """`.csv` produce la misma tabla mediante el motor existente."""
@@ -151,6 +244,51 @@ class CsvTableTests(unittest.TestCase):
 
             self.assertEqual(table.columns, ["id", "valor"])
             self.assertEqual(len(table.rows), 2)
+
+    def test_rejects_csv_over_cell_limit(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "datos.csv"
+            p.write_text("a,b\n1,2\n", encoding="utf-8")
+            with mock.patch("motor.sources.tables.MAX_TABLE_CELLS", 3):
+                with self.assertRaises(detect.UnsupportedFormat):
+                    tables.read(p)
+
+    def test_rejects_cumulative_cells_and_shape_limits(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "datos.csv"
+            p.write_text("a\n1\n2\n", encoding="utf-8")
+            with mock.patch("motor.sources.tables.MAX_TABLE_CELLS", 2):
+                with self.assertRaises(detect.UnsupportedFormat):
+                    tables.read(p)
+            p.write_text("a,b\n", encoding="utf-8")
+            with mock.patch("motor.sources.tables.MAX_TABLE_COLUMNS", 1):
+                with self.assertRaises(detect.UnsupportedFormat):
+                    tables.read(p)
+            with mock.patch("motor.sources.tables.MAX_TABLE_CELLS", 1):
+                with self.assertRaises(detect.UnsupportedFormat):
+                    tables.read(p)
+            p.write_text("a\n1\n", encoding="utf-8")
+            with mock.patch("motor.sources.tables.MAX_TABLE_ROWS", 1):
+                with self.assertRaises(detect.UnsupportedFormat):
+                    tables.read(p)
+
+    def test_rejects_csv_cell_sum_when_rows_have_different_widths(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "irregular.csv"
+            p.write_text("a,b\n1,2\n3\n4\n", encoding="utf-8")
+            with mock.patch("motor.sources.tables.MAX_TABLE_CELLS", 5):
+                with self.assertRaises(detect.UnsupportedFormat):
+                    tables.read(p)
+
+    def test_empty_and_blank_csv_rows_are_bounded_and_skipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "datos.csv"
+            p.write_text("a\n\n1\n", encoding="utf-8")
+            table = tables.read(p)
+            self.assertEqual(table.rows, [["1"]])
+            p.write_text("", encoding="utf-8")
+            with self.assertRaises(tables.EmptySheet):
+                tables.read(p)
 
 
 class DocumentTableTests(unittest.TestCase):
@@ -208,6 +346,25 @@ class DocumentTableTests(unittest.TestCase):
 
             self.assertEqual(table.rows, [])
             self.assertIn("sin texto extraíble", table.note.lower())
+
+    def test_pdf_page_limit_is_enforced(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "documento.pdf"
+            _write_pdf(p, ["texto"])
+            with mock.patch("motor.sources.documents.MAX_DOCUMENT_PAGES", 0):
+                with self.assertRaises(detect.UnsupportedFormat):
+                    documents.read(p)
+
+    def test_document_row_and_text_limits_are_enforced(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "notas.txt"
+            p.write_text("una línea", encoding="utf-8")
+            with mock.patch("motor.sources.documents.MAX_DOCUMENT_ROWS", 0):
+                with self.assertRaises(detect.UnsupportedFormat):
+                    documents.read(p)
+            with mock.patch("motor.sources.documents.MAX_DOCUMENT_TEXT_CHARS", 0):
+                with self.assertRaises(detect.UnsupportedFormat):
+                    documents.read(p)
 
 
 def _write_pdf(path: Path, lines: list[str]) -> None:
@@ -340,6 +497,11 @@ class ReadBytesTests(unittest.TestCase):
 
         table = tables.read_bytes(b"id,x\n1,a\n", name="datos.csv")
         self.assertEqual(table.columns, ["id", "x"])
+
+    def test_rejects_bytes_above_source_limit(self):
+        with mock.patch("motor.sources.tables.MAX_SOURCE_BYTES", 2):
+            with self.assertRaises(detect.UnsupportedFormat):
+                tables.read_bytes(b"a,b", name="datos.csv")
 
     def test_reads_xlsx_bytes(self):
         from motor.sources import tables

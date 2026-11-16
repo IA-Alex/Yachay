@@ -19,6 +19,17 @@ MAX_REQUEST_BYTES = 16 * 1024 * 1024
 # arrives as a clean 413 instead of a broken connection.
 MAX_REQUEST_DRAIN = 4 * MAX_REQUEST_BYTES
 
+# All readers share this bound, including CLI and files placed on disk directly.
+MAX_SOURCE_BYTES = MAX_REQUEST_BYTES
+MAX_ARCHIVE_ENTRIES = 2048
+MAX_ARCHIVE_EXPANDED_BYTES = 32 * 1024 * 1024
+MAX_TABLE_ROWS = 100_000
+MAX_TABLE_COLUMNS = 10_000
+MAX_TABLE_CELLS = 1_000_000
+MAX_DOCUMENT_PAGES = 5_000
+MAX_DOCUMENT_ROWS = 100_000
+MAX_DOCUMENT_TEXT_CHARS = 32 * 1024 * 1024
+
 # Retention parameters (spec section 12, ADR-017). These are startup values
 # pending calibration (spec section 16): they are not validated performance
 # parameters. They live here, not in `defaults.toml`, for the same reason as

@@ -10,6 +10,7 @@ class MotorPathsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             paths = MotorPaths.from_root(Path(d))
             self.assertTrue(paths.inbox.is_dir())
+            self.assertTrue(paths.model_inputs.is_dir())
             self.assertTrue(paths.processing.is_dir())
             self.assertTrue(paths.tmp.is_dir())
             self.assertEqual(paths.sqlite_path.name, "motor.sqlite3")

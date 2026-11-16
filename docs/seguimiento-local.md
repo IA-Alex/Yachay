@@ -629,16 +629,15 @@ potencial por carrera:
 - `tests/unit/test_worker.py`, `tests/unit/test_sources.py`,
   `tests/unit/test_api.py`: las siete pruebas de regresión.
 
-**No cambiado (revisado y descartado).** `pyproject.toml` conserva `crewai`: es
-la dependencia legítima del proyecto Flow (`[tool.crewai]`) y provee los lectores
-de hojas; retirarla rompería el flujo y la resolución offline. La superficie de
-rutas de la API (17, no nueve) ya está declarada como extensión en ADR-019 §6.
+**Nota histórica (revisada el 2026-11-15).** En aquella intervención
+`pyproject.toml` conservaba `crewai` como dependencia del proyecto Flow. El
+manifiesto actual ya no la declara; las hojas usan `openpyxl` y `odfpy`. Las
+rutas actuales de API se sincronizan con `docs/api/openapi.yaml`.
 
-**Pendiente (fuera de alcance, sin cambio de comportamiento).** Las rutas de
-modelado leen desde `inbox/` sin cota de tamaño propia; el límite de 16 MiB solo
-aplica a la subida por API. Está acotado por `MemoryMax=2G` de la unidad y por el
-modelo de acceso del socket, por lo que se documenta como riesgo menor, no como
-defecto confirmado.
+**Pendiente de aquella intervención (resuelto el 2026-11-15).** La carga limita
+fuentes a 16 MiB en HTTP y CLI; ahora los lectores también acotan expansión ZIP,
+filas, columnas, celdas, páginas y texto extraído. Los límites se documentan en
+`src/motor/limits.py` y devuelven un rechazo de formato controlado.
 
 ## Intervención 2026-11-12 (cuarta) — cierre de verificación y cadena de suministro
 
@@ -807,3 +806,59 @@ primarias del código:
 La actualización afecta al README, ADR-016/019, contrato API, arquitectura,
 diagramas, seguimiento y auditorías de cierre/UI. Los informes con resultados
 anteriores conservan sus cifras y quedan identificados como evidencia histórica.
+
+## Reparación de hallazgos — 2026-11-15
+
+- **INT-01:** `POST /v1/inputs` guarda una única copia en `data/model-inputs/`
+  y crea un hard link en `data/inbox/`. El worker conserva su ruta única de
+  admisión y su limpieza ya no invalida el perfilado ni los modelos. Los dos
+  nombres comparten inode y no duplican bytes.
+- **INT-02:** límites comunes en `src/motor/limits.py`: fuente 16 MiB, ZIP
+  expandido 32 MiB y 2048 partes, tabla de 100 000 filas / 10 000 columnas /
+  1 000 000 celdas, documentos de 5000 páginas / 100 000 filas / 32 MiB de
+  texto. Se rechaza la repetición ODS antes de expandirla.
+- **INT-03:** se conserva PyMuPDF 1.26.7 porque Yachay solo abre PDF y extrae
+  texto; no llama a `Page.add_freetext_annot`, la ruta del aviso CVE revisado.
+  PyMuPDF 2.1 añadiría múltiples dependencias de layout/LLM que no usa el
+  producto. El pin se volverá a evaluar cuando la corrección relevante pueda
+  adoptarse sin esa expansión o si el código empieza a usar anotaciones.
+- **INT-04:** nuevos directorios de datos se crean con modo 0750, nuevos archivos
+  de carga con 0640, y el CLI usa temporalmente `umask 0027` durante la orden.
+  No se cambian permisos de instalaciones existentes.
+- **INT-05:** se conserva `odfpy` porque el soporte ODS está implementado y
+  cubierto; no se halló un defecto o CVE que justifique un reemplazo. Antes de
+  distribuir el producto debe verificarse el inventario de licencias del
+  artefacto, dado que PyPI declara Apache/GPL/LGPL y el release no publica
+  provenance.
+- **INT-06/07:** Hatchling queda fijado en 1.33.0; CI ejecuta `uv sync --locked`,
+  build y `scripts/test.sh` en Python 3.11–3.13 con acciones fijadas por SHA. La
+  contradicción histórica sobre CrewAI queda marcada como tal.
+- **UI-01:** el helper de tooltip no tenía llamadas en las vistas; se retiró
+  para no conservar una interacción solo-hover sin contenido de ayuda real.
+
+**Validación:** baseline anterior a cambios: `./scripts/test.sh` → 477 pruebas,
+7 omitidas, cobertura 100 %, Ruff limpio. Cierre: 493 pruebas, 7 omitidas,
+100 % de cobertura y Ruff limpio; `uv lock --check`, `uv build` y
+`pip-audit --local` finalizaron sin hallazgos conocidos. El detalle y límites de validación
+están en `audit/evaluacion-integral-2026-11-15.md`.
+
+La política de actualizaciones automatizadas se documenta en
+`docs/mantenimiento-dependencias.md` y se ejecuta mediante
+`.github/dependabot.yml`; las versiones concretas permanecen en los manifiestos,
+lockfile y workflow de CI.
+
+La coherencia entre rutas y documentación se mantiene con
+`python scripts/sync_api_docs.py --write`; `scripts/test.sh` valida el registro
+contra OpenAPI y el índice generado.
+
+### Visualización local y propuestas acotadas (ADR-020)
+
+- Resultados de corridas del modelo: Parquet local con nombre de fuente y SHA-256;
+  migración aditiva v4 en SQLite.
+- Informes HTML locales, SVG y tabla accesible; regeneración/borrado con confirmación
+  en la vista dedicada. Los datos de corrida sobreviven al borrado del informe.
+- Propuestas opcionales de IA sobre el registro actual de reglas; vista previa y
+  aceptación humana crean nueva versión, sin ejecución automática. Solo se envían
+  instrucción + perfil, sin filas. Requiere `DEEPINFRA_API_KEY` y puede generar costo.
+- Se mantiene fuera de alcance el gateway general, ejecución de código arbitrario,
+  y la generación automática de nuevas funciones.

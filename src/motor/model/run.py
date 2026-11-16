@@ -12,9 +12,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
+import tempfile
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from motor.model import engine
 from motor.model.joins import Join
@@ -47,6 +50,9 @@ class RunRecord:
     created_at: float
     output: str
     fingerprint: Fingerprint
+    artifact_path: str | None = None
+    source_name: str | None = None
+    source_sha256: str | None = None
 
 
 def fingerprint(table: Table) -> Fingerprint:
@@ -152,24 +158,86 @@ def record(
     *,
     table: Table,
     output: str = "",
+    artifact_dir: Path | None = None,
+    source_name: str | None = None,
+    source_sha256: str | None = None,
     now: float | None = None,
 ) -> int:
-    """Guarda la huella de una ejecución y devuelve su identificador."""
+    """Guarda la huella y, opcionalmente, un Parquet local del resultado."""
     fp = fingerprint(table)
     at = time.time() if now is None else now
-    cur = conn.execute(
-        "INSERT INTO runs (model_id, created_at, output, columns, rows_count, hash) "
-        "VALUES (?,?,?,?,?,?)",
-        (model_id, at, output, json.dumps(fp.columns), fp.rows, fp.hash),
-    )
-    conn.commit()
-    return int(cur.lastrowid)
+    artifact: Path | None = None
+    temporary: Path | None = None
+    descriptor: int | None = None
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        cur = conn.execute(
+            "INSERT INTO runs (model_id, created_at, output, columns, rows_count, hash, "
+            "source_name, source_sha256) VALUES (?,?,?,?,?,?,?,?)",
+            (model_id, at, output, json.dumps(fp.columns), fp.rows, fp.hash,
+             source_name, source_sha256),
+        )
+        run_id = int(cur.lastrowid)
+        if artifact_dir is not None:
+            directory = Path(artifact_dir)
+            directory.mkdir(mode=0o750, parents=True, exist_ok=True)
+            artifact = directory / f"run-{run_id}.parquet"
+            descriptor, temp_name = tempfile.mkstemp(
+                prefix=f".run-{run_id}-", suffix=".part", dir=directory
+            )
+            temporary = Path(temp_name)
+            os.fchmod(descriptor, 0o640)
+            os.close(descriptor)
+            descriptor = None
+            _write_parquet(table, temporary)
+            with temporary.open("rb") as artifact_file:
+                os.fsync(artifact_file.fileno())
+            os.replace(temporary, artifact)
+            directory_fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            conn.execute(
+                "UPDATE runs SET artifact_path = ? WHERE run_id = ?",
+                (artifact.name, run_id),
+            )
+        conn.commit()
+        return run_id
+    except BaseException:
+        conn.rollback()
+        if descriptor is not None:
+            os.close(descriptor)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+        if artifact is not None:
+            artifact.unlink(missing_ok=True)
+        raise
+
+
+def _write_parquet(table: Table, path: Path) -> None:
+    """Write Arrow columns, stringifying only columns with mixed values."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    columns: dict[str, object] = {}
+    for index, name in enumerate(table.columns):
+        values = [row[index] for row in table.rows]
+        try:
+            columns[name] = pa.array(values)
+        except (pa.ArrowInvalid, pa.ArrowTypeError):
+            columns[name] = pa.array(
+                [None if value is None else str(value) for value in values],
+                type=pa.string(),
+            )
+    pq.write_table(pa.table(columns), path, compression="zstd")
 
 
 def get(conn: sqlite3.Connection, run_id: int) -> RunRecord:
     """Lee una ejecución por su identificador."""
     row = conn.execute(
-        "SELECT run_id, model_id, created_at, output, columns, rows_count, hash "
+        "SELECT run_id, model_id, created_at, output, columns, rows_count, hash, "
+        "artifact_path, source_name, source_sha256 "
         "FROM runs WHERE run_id = ?",
         (run_id,),
     ).fetchone()
@@ -183,7 +251,8 @@ def list_for(conn: sqlite3.Connection, model_id: int) -> list[RunRecord]:
     return [
         _record_from(row)
         for row in conn.execute(
-            "SELECT run_id, model_id, created_at, output, columns, rows_count, hash "
+            "SELECT run_id, model_id, created_at, output, columns, rows_count, hash, "
+            "artifact_path, source_name, source_sha256 "
             "FROM runs WHERE model_id = ? ORDER BY created_at DESC, run_id DESC",
             (model_id,),
         ).fetchall()
@@ -191,7 +260,7 @@ def list_for(conn: sqlite3.Connection, model_id: int) -> list[RunRecord]:
 
 
 def _record_from(row) -> RunRecord:
-    run_id, model_id, created_at, output, columns, rows_count, hash_ = row
+    run_id, model_id, created_at, output, columns, rows_count, hash_, *metadata = row
     return RunRecord(
         run_id=int(run_id),
         model_id=int(model_id),
@@ -200,4 +269,7 @@ def _record_from(row) -> RunRecord:
         fingerprint=Fingerprint(
             columns=json.loads(columns), rows=int(rows_count), hash=hash_
         ),
+        artifact_path=metadata[0] if metadata else None,
+        source_name=metadata[1] if len(metadata) > 1 else None,
+        source_sha256=metadata[2] if len(metadata) > 2 else None,
     )

@@ -33,7 +33,7 @@ class StorageSchemaTests(unittest.TestCase):
             conn.execute("UPDATE schema_version SET version = 1")
             create_schema(conn)
             self.assertEqual(
-                conn.execute("SELECT version FROM schema_version").fetchone()[0], 3
+                conn.execute("SELECT version FROM schema_version").fetchone()[0], 4
             )
 
     def test_schema_marker_is_restored_when_empty(self):
@@ -42,7 +42,7 @@ class StorageSchemaTests(unittest.TestCase):
             conn.execute("DELETE FROM schema_version")
             _migrate_schema(conn)
             self.assertEqual(
-                conn.execute("SELECT version FROM schema_version").fetchone()[0], 3
+                conn.execute("SELECT version FROM schema_version").fetchone()[0], 4
             )
 
     def test_schema_rejects_a_database_newer_than_the_code(self):

@@ -31,6 +31,7 @@ class Body:
             owns_part = True
             handle = os.fdopen(descriptor, "wb")
             with handle:
+                os.fchmod(handle.fileno(), 0o640)
                 self.stream.seek(0)
                 for block in iter(lambda: self.stream.read(_BLOCK), b""):
                     handle.write(block)

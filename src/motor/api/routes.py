@@ -1,14 +1,17 @@
 """v1 route table and handlers (ADR-016).
 
 The API is a thin, stateless projection over SQLite and the filesystem: it
-reads state, asks the job queue to flip a flag, and drops inputs in `inbox/`.
+reads state, asks the job queue to flip a flag, and publishes inputs for the
+worker in `inbox/` while retaining a hard-linked source for model operations.
 It never reconciles, never claims a lease, never runs a pipeline, and never
 returns filesystem paths or data values (ADR-016, section 2.2).
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 import sqlite3
 from collections.abc import Callable, Mapping
@@ -248,7 +251,7 @@ def _job_retry(ctx: ApiContext, request: Request) -> tuple[int, dict]:
 
 
 def _inputs_upload(ctx: ApiContext, request: Request) -> tuple[int, dict]:
-    """Drop an input in `inbox/` (ADR-016).
+    """Retain an uploaded input and publish its worker-facing inbox link.
 
     The API never creates a job: the worker's scanner admits the file on its own
     cycle, so there is exactly one admission path (ADR-008) and the API cannot
@@ -262,7 +265,8 @@ def _inputs_upload(ctx: ApiContext, request: Request) -> tuple[int, dict]:
     if not _SAFE_NAME.match(name):
         raise ApiError(ErrorCode.BAD_REQUEST, "el nombre debe ser un nombre de archivo simple")
     target = ctx.paths.inbox / name
-    if target.exists():
+    model_target = ctx.paths.model_inputs / name
+    if target.exists() or model_target.exists():
         raise ApiError(ErrorCode.INVALID_STATE, "ya existe una entrada con ese nombre")
     if request.body.size == 0:
         # An empty file would be admitted by the scanner and fail later in the
@@ -270,12 +274,36 @@ def _inputs_upload(ctx: ApiContext, request: Request) -> tuple[int, dict]:
         # boundary, where the client can still act on the message (ADR-016 §10).
         raise ApiError(ErrorCode.BAD_REQUEST, "el archivo está vacío")
     try:
-        request.body.save_atomic(target)
+        # Keep the inbox's existing per-name upload lock. The source is staged
+        # elsewhere, but concurrent/external writers still coordinate here.
+        inbox_part = target.with_name(target.name + ".part")
+        lock_fd = os.open(
+            inbox_part, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640
+        )
+        os.close(lock_fd)
+        # Keep the model input available after the worker consumes inbox/.
+        # inbox/ remains the sole job-admission path (ADR-008/016).
+        try:
+            request.body.save_atomic(model_target)
+            # Same filesystem: one inode, so worker cleanup of inbox/ does not
+            # remove the retained model input or duplicate its disk usage.
+            os.link(model_target, target)
+        except OSError:
+            model_target.unlink(missing_ok=True)
+            raise
+        finally:
+            inbox_part.unlink(missing_ok=True)
     except FileExistsError:
         raise ApiError(
             ErrorCode.INVALID_STATE, "hay otra subida de ese nombre en curso"
         ) from None
     return 201, {"accepted": True, "name": name, "size_bytes": request.body.size}
+
+
+def _model_input_path(ctx: ApiContext, name: str) -> Path:
+    """Resolve retained API uploads first, preserving legacy inbox inputs."""
+    retained = ctx.paths.model_inputs / name
+    return retained if retained.is_file() else ctx.paths.inbox / name
 
 
 def _datasets_list(ctx: ApiContext, request: Request) -> tuple[int, dict]:
@@ -363,7 +391,7 @@ def _model_detail(ctx: ApiContext, request: Request) -> tuple[int, dict]:
 
 
 def _model_create(ctx: ApiContext, request: Request) -> tuple[int, dict]:
-    """Crea un modelo perfiando un archivo ya depositado en `inbox/`."""
+    """Crea un modelo perfilando una fuente cargada o legacy en `inbox/`."""
     from motor.model import infer, store
     from motor.sources import EmptySheet, SheetNotFound, profile_table, read_any
     from motor.sources.detect import UnsupportedFormat
@@ -377,7 +405,7 @@ def _model_create(ctx: ApiContext, request: Request) -> tuple[int, dict]:
     if not _SAFE_NAME.match(source):
         raise ApiError(ErrorCode.BAD_REQUEST, "el nombre debe ser un nombre simple")
 
-    path = ctx.paths.inbox / source
+    path = _model_input_path(ctx, source)
     if not path.is_file():
         raise ApiError(ErrorCode.NOT_FOUND, f"no existe el archivo {source!r}")
 
@@ -409,7 +437,7 @@ def _model_create(ctx: ApiContext, request: Request) -> tuple[int, dict]:
 
 
 def _profile_input(ctx: ApiContext, request: Request) -> tuple[int, dict]:
-    """Perfila un archivo de la bandeja sin crear nada."""
+    """Perfila un archivo cargado sin crear nada."""
     from motor.sources import EmptySheet, SheetNotFound, profile_table, read_any
     from motor.sources.detect import UnsupportedFormat
 
@@ -419,7 +447,7 @@ def _profile_input(ctx: ApiContext, request: Request) -> tuple[int, dict]:
     if not _SAFE_NAME.match(name):
         raise ApiError(ErrorCode.BAD_REQUEST, "el nombre debe ser un nombre simple")
 
-    path = ctx.paths.inbox / name
+    path = _model_input_path(ctx, name)
     if not path.is_file():
         raise ApiError(ErrorCode.NOT_FOUND, f"no existe el archivo {name!r}")
 
@@ -458,6 +486,10 @@ def _runs_list(ctx: ApiContext, request: Request) -> tuple[int, dict]:
                 "rows": r.fingerprint.rows,
                 "columns": r.fingerprint.columns,
                 "hash": r.fingerprint.hash,
+                "artifact_available": bool(
+                    r.artifact_path
+                    and (ctx.paths.model_outputs / r.artifact_path).is_file()
+                ),
             }
             for r in runs
         ],
@@ -466,7 +498,7 @@ def _runs_list(ctx: ApiContext, request: Request) -> tuple[int, dict]:
 
 
 def _run_create(ctx: ApiContext, request: Request) -> tuple[int, dict]:
-    """Ejecuta un modelo sobre un archivo y guarda la huella (M6)."""
+    """Ejecuta un modelo sobre una fuente cargada y guarda la huella (M6)."""
     from motor.model import rules, run, store
     from motor.sources import EmptySheet, SheetNotFound, read_any
     from motor.sources.detect import UnsupportedFormat
@@ -481,7 +513,7 @@ def _run_create(ctx: ApiContext, request: Request) -> tuple[int, dict]:
     conn = ctx.connect()
     try:
         model = _require_model(conn, store, model_id)
-        path = ctx.paths.inbox / source
+        path = _model_input_path(ctx, source)
         if not path.is_file():
             raise ApiError(ErrorCode.NOT_FOUND, f"no existe el archivo {source!r}")
         if not model.entities:
@@ -504,7 +536,17 @@ def _run_create(ctx: ApiContext, request: Request) -> tuple[int, dict]:
         except run.RunError as exc:
             raise ApiError(ErrorCode.BAD_REQUEST, str(exc)) from None
 
-        run_id = run.record(conn, model_id, table=result, output=entity.name)
+        with path.open("rb") as source_file:
+            source_hash = hashlib.file_digest(source_file, "sha256").hexdigest()
+        run_id = run.record(
+            conn,
+            model_id,
+            table=result,
+            output=entity.name,
+            artifact_dir=ctx.paths.model_outputs,
+            source_name=source,
+            source_sha256=source_hash,
+        )
         fp = run.fingerprint(result)
     finally:
         conn.close()
@@ -515,6 +557,163 @@ def _run_create(ctx: ApiContext, request: Request) -> tuple[int, dict]:
         "rows_out": fp.rows,
         "hash": fp.hash,
     }
+
+
+def _report_generate(ctx: ApiContext, request: Request) -> tuple[int, dict]:
+    """Create or regenerate an offline HTML report for one persisted run."""
+    import pyarrow as pa
+
+    from motor import dashboard
+    from motor.model import run, store
+
+    model_id = _int_param(request, "model_id")
+    run_id = _int_param(request, "run_id")
+    conn = ctx.connect()
+    try:
+        _require_model(conn, store, model_id)
+        try:
+            record = run.get(conn, run_id)
+        except run.RunNotFound:
+            raise ApiError(ErrorCode.NOT_FOUND, "ejecución no encontrada") from None
+    finally:
+        conn.close()
+    if record.model_id != model_id:
+        raise ApiError(ErrorCode.NOT_FOUND, "ejecución no encontrada")
+    if not record.artifact_path or Path(record.artifact_path).name != record.artifact_path:
+        raise ApiError(ErrorCode.INVALID_STATE, "esta ejecución no tiene datos persistidos")
+    data_path = ctx.paths.model_outputs / record.artifact_path
+    if not data_path.is_file():
+        raise ApiError(ErrorCode.INVALID_STATE, "no se encuentra el resultado de la ejecución")
+    report_path = ctx.paths.model_outputs / f"report-{run_id}.html"
+    try:
+        dashboard.generate_report(data_path, report_path, title=f"Ejecución {run_id}")
+    except (OSError, ValueError, pa.ArrowException) as exc:
+        raise ApiError(ErrorCode.UNAVAILABLE, "no se pudo generar el informe") from exc
+    return 200, {"run_id": run_id, "generated": True}
+
+
+def _report_delete(ctx: ApiContext, request: Request) -> tuple[int, dict]:
+    """Delete only the generated HTML report; retain the source result."""
+    from motor.model import run, store
+
+    model_id = _int_param(request, "model_id")
+    run_id = _int_param(request, "run_id")
+    conn = ctx.connect()
+    try:
+        _require_model(conn, store, model_id)
+        try:
+            record = run.get(conn, run_id)
+        except run.RunNotFound:
+            raise ApiError(ErrorCode.NOT_FOUND, "ejecución no encontrada") from None
+    finally:
+        conn.close()
+    if record.model_id != model_id:
+        raise ApiError(ErrorCode.NOT_FOUND, "ejecución no encontrada")
+    report_path = ctx.paths.model_outputs / f"report-{run_id}.html"
+    try:
+        report_path.unlink()
+    except FileNotFoundError:
+        raise ApiError(ErrorCode.NOT_FOUND, "el informe no existe") from None
+    except OSError as exc:
+        raise ApiError(ErrorCode.UNAVAILABLE, "no se pudo borrar el informe") from exc
+    return 200, {"run_id": run_id, "deleted": True}
+
+
+def _assistant_proposal(ctx: ApiContext, request: Request) -> tuple[int, dict]:
+    """Return a validated rule proposal; no database writes or raw rows sent."""
+    from motor import assistant
+    from motor.model import store
+    from motor.sources import EmptySheet, SheetNotFound, read_any
+    from motor.sources.detect import UnsupportedFormat
+    from motor.sources.profile import profile_table
+
+    model_id = _int_param(request, "model_id")
+    body = _json_body(request)
+    if set(body) != {"source", "instruction"}:
+        raise ApiError(ErrorCode.BAD_REQUEST, "se requieren source e instruction")
+    source = body["source"]
+    if not isinstance(source, str) or not _SAFE_NAME.fullmatch(source):
+        raise ApiError(ErrorCode.BAD_REQUEST, "source debe ser un nombre simple")
+    conn = ctx.connect()
+    try:
+        model = _require_model(conn, store, model_id)
+        allowed = {attribute.name for entity in model.entities for attribute in entity.attributes}
+    finally:
+        conn.close()
+    path = _model_input_path(ctx, source)
+    if not path.is_file():
+        raise ApiError(ErrorCode.NOT_FOUND, f"no existe el archivo {source!r}")
+    try:
+        table = read_any(path)
+    except (UnsupportedFormat, SheetNotFound, EmptySheet) as exc:
+        raise ApiError(ErrorCode.BAD_REQUEST, str(exc)) from None
+    schema = [item.as_dict() for item in profile_table(table) if item.name in allowed]
+    if not schema:
+        raise ApiError(ErrorCode.BAD_REQUEST, "la fuente no contiene columnas del modelo")
+    try:
+        proposal = assistant.propose(body["instruction"], schema)
+    except assistant.AssistantError as exc:
+        raise ApiError(ErrorCode.UNAVAILABLE, str(exc)) from None
+    return 200, {"proposal": proposal, "operations": assistant.operations()}
+
+
+def _assistant_apply(ctx: ApiContext, request: Request) -> tuple[int, dict]:
+    """Validate accepted operations again, then clone a new model version."""
+    from motor import assistant
+    from motor.model import store
+
+    model_id = _int_param(request, "model_id")
+    body = _json_body(request)
+    if set(body) != {"proposal"}:
+        raise ApiError(ErrorCode.BAD_REQUEST, "se requiere proposal")
+    conn = ctx.connect()
+    try:
+        model = _require_model(conn, store, model_id)
+        schema = [
+            {"name": attribute.name}
+            for entity in model.entities for attribute in entity.attributes
+        ]
+        try:
+            proposal = assistant.validate_proposal(body["proposal"], schema)
+            if not proposal["rules"]:
+                raise assistant.AssistantError("No hay reglas que aplicar.")
+            new_id, version = assistant.apply_as_new_version(
+                conn, model.model_id, proposal["rules"]
+            )
+        except assistant.AssistantError as exc:
+            raise ApiError(ErrorCode.BAD_REQUEST, str(exc)) from None
+    finally:
+        conn.close()
+    return 201, {"model_id": new_id, "version": version, "applied": True}
+
+
+def _json_body(request: Request) -> dict:
+    content_type = next((value for key, value in request.headers.items()
+                         if key.lower() == "content-type"), "")
+    if (content_type.split(";")[0].strip().lower()
+            != "application/json"):
+        raise ApiError(ErrorCode.BAD_REQUEST, "se requiere Content-Type: application/json")
+    if request.body.size > 32 * 1024:
+        raise ApiError(ErrorCode.PAYLOAD_TOO_LARGE, "la propuesta supera 32 KiB")
+    request.body.stream.seek(0)
+    try:
+        value = json.loads(
+            request.body.stream.read(32 * 1024 + 1), object_pairs_hook=_unique_json_object
+        )
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError, RecursionError):
+        raise ApiError(ErrorCode.BAD_REQUEST, "el cuerpo JSON no es válido") from None
+    if not isinstance(value, dict):
+        raise ApiError(ErrorCode.BAD_REQUEST, "el cuerpo debe ser un objeto JSON")
+    return value
+
+
+def _unique_json_object(pairs: list[tuple[str, object]]) -> dict:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("clave JSON duplicada")
+        result[key] = value
+    return result
 
 
 # -- reglas del modelo (M3) --------------------------------------------------
@@ -676,7 +875,7 @@ def _diff(ctx: ApiContext, request: Request) -> tuple[int, dict]:
 
 
 def _orphans(ctx: ApiContext, request: Request) -> tuple[int, dict]:
-    """Informe de huérfanos entre dos entradas de la bandeja (M6, C5)."""
+    """Informe de huérfanos entre dos fuentes cargadas (M6, C5)."""
     from motor.model import engine, joins
     from motor.sources import EmptySheet, SheetNotFound, read_any
     from motor.sources.detect import UnsupportedFormat
@@ -695,7 +894,7 @@ def _orphans(ctx: ApiContext, request: Request) -> tuple[int, dict]:
 
     paths = {}
     for name in (left, right):
-        path = ctx.paths.inbox / name
+        path = _model_input_path(ctx, name)
         if not path.is_file():
             raise ApiError(ErrorCode.NOT_FOUND, f"no existe el archivo {name!r}")
         paths[name] = path
@@ -801,6 +1000,16 @@ _DYNAMIC_ROUTES: tuple[tuple[str, str, str, Handler], ...] = (
      r"^/v1/models/(?P<model_id>[^/]+)/runs$", _runs_list),
     ("POST", "/v1/models/{model_id}/runs",
      r"^/v1/models/(?P<model_id>[^/]+)/runs$", _run_create),
+    ("POST", "/v1/models/{model_id}/runs/{run_id}/report",
+     r"^/v1/models/(?P<model_id>[^/]+)/runs/(?P<run_id>[^/]+)/report$",
+     _report_generate),
+    ("DELETE", "/v1/models/{model_id}/runs/{run_id}/report",
+     r"^/v1/models/(?P<model_id>[^/]+)/runs/(?P<run_id>[^/]+)/report$",
+     _report_delete),
+    ("POST", "/v1/models/{model_id}/assistant/proposals",
+     r"^/v1/models/(?P<model_id>[^/]+)/assistant/proposals$", _assistant_proposal),
+    ("POST", "/v1/models/{model_id}/assistant/apply",
+     r"^/v1/models/(?P<model_id>[^/]+)/assistant/apply$", _assistant_apply),
     ("GET", "/v1/models/{model_id}/rules",
      r"^/v1/models/(?P<model_id>[^/]+)/rules$", _rules_list),
     ("POST", "/v1/models/{model_id}/rules",
@@ -859,7 +1068,10 @@ def dispatch(ctx: ApiContext, *, method: str, target: str, body: Body,
     path, _, raw_query = target.partition("?")
     route, handler, params = _resolve(method, path)
     try:
-        _reject_json_body(headers)
+        _reject_json_body(headers, allow=route in {
+            "/v1/models/{model_id}/assistant/proposals",
+            "/v1/models/{model_id}/assistant/apply",
+        })
         request = Request(
             params=params,
             # `keep_blank_values` preserves `?state=` as "". Without it, an empty
@@ -876,7 +1088,7 @@ def dispatch(ctx: ApiContext, *, method: str, target: str, body: Body,
     return Response(status=status, payload=ok(data), route=route)
 
 
-def _reject_json_body(headers: Mapping[str, str]) -> None:
+def _reject_json_body(headers: Mapping[str, str], *, allow: bool = False) -> None:
     """Refuse a declared JSON body: this API has no JSON request contract.
 
     Mutations live in the path and query string, and the only body is the raw
@@ -884,6 +1096,6 @@ def _reject_json_body(headers: Mapping[str, str]) -> None:
     payload silently stored as if it were a dataset.
     """
     content_type = (headers.get("Content-Type") or "").split(";")[0].strip().lower()
-    if content_type == "application/json":
+    if content_type == "application/json" and not allow:
         raise ApiError(ErrorCode.BAD_REQUEST, "esta API no acepta un cuerpo JSON")
 

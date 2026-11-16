@@ -519,7 +519,7 @@ sí un acoplamiento bidireccional paquete↔submódulo que conviene documentar.
   `_SCHEMA_VERSION`).
 - Estados: `JOB_STATES` en `schema.py`; transiciones de retry/lease desde
   `docs/api/openapi.yaml` y los ADR-014/015/017.
-- Rutas de API: **9 estáticas + 11 dinámicas = 20 operaciones** en
+- Rutas de API: **9 estáticas + 15 dinámicas = 24 operaciones** en
   `src/motor/api/routes.py` (`_STATIC_ROUTES`, `_DYNAMIC_ROUTES`). El "17 rutas"
   de la documentación histórica corresponde a una versión intermedia; el contrato
   actual está en `docs/api/openapi.yaml`.

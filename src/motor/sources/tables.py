@@ -14,6 +14,12 @@ import io
 from dataclasses import dataclass
 from pathlib import Path
 
+from motor.limits import (
+    MAX_SOURCE_BYTES,
+    MAX_TABLE_CELLS,
+    MAX_TABLE_COLUMNS,
+    MAX_TABLE_ROWS,
+)
 from motor.sources import detect
 
 
@@ -49,6 +55,8 @@ def read(path: Path, *, sheet: str | None = None) -> Table:
 
 def read_bytes(data: bytes, *, name: str, sheet: str | None = None) -> Table:
     """Lee una hoja desde memoria (útil para la API, que recibe un cuerpo)."""
+    if len(data) > MAX_SOURCE_BYTES:
+        raise detect.UnsupportedFormat("el archivo excede el límite de 16 MiB")
     suffix = Path(name).suffix.lower()
     if suffix == ".csv":
         return _read_csv_text(data.decode("utf-8-sig", errors="replace"))
@@ -76,11 +84,21 @@ def _read_csv(path: Path) -> Table:
 
 def _read_csv_text(text: str) -> Table:
     reader = csv.reader(io.StringIO(text))
-    rows = list(reader)
-    if not rows:
-        raise EmptySheet("el CSV no tiene filas")
-    columns = _unique_columns(rows[0])
-    body = [row for row in rows[1:] if any(cell != "" for cell in row)]
+    try:
+        header = next(reader)
+    except StopIteration:
+        raise EmptySheet("el CSV no tiene filas") from None
+    _check_shape(1, len(header))
+    columns = _unique_columns(header)
+    body = []
+    cells = len(header)
+    for row in reader:
+        _check_shape(len(body) + 2, len(row))
+        cells += len(row)
+        if cells > MAX_TABLE_CELLS:
+            raise detect.UnsupportedFormat("la tabla excede el límite de celdas")
+        if any(cell != "" for cell in row):
+            body.append(row)
     return Table(columns=columns, rows=body)
 
 
@@ -100,7 +118,11 @@ def _read_xlsx(path: Path, sheet: str | None) -> Table:
             ws = wb[sheet]
         else:
             ws = wb[wb.sheetnames[0]]
-        rows = [list(row) for row in ws.iter_rows(values_only=True)]
+        rows = []
+        for row in ws.iter_rows(values_only=True):
+            values = list(row)
+            _check_shape(len(rows) + 1, len(values))
+            rows.append(values)
     finally:
         wb.close()
     return _rows_to_table(rows)
@@ -126,10 +148,18 @@ def _read_ods(path: Path, sheet: str | None) -> Table:
         chosen = sheets[0]
 
     rows: list[list] = []
+    total_cells = 0
     for tr in chosen.getElementsByType(TableRow):
+        if len(rows) >= MAX_TABLE_ROWS:
+            raise detect.UnsupportedFormat("la tabla excede el límite de filas")
         values: list = []
         for cell in tr.getElementsByType(TableCell):
             repeat = int(cell.getAttribute("numbercolumnsrepeated") or 1)
+            if repeat < 1 or len(values) + repeat > MAX_TABLE_COLUMNS:
+                raise detect.UnsupportedFormat("la tabla excede el límite de columnas")
+            if total_cells + repeat > MAX_TABLE_CELLS:
+                raise detect.UnsupportedFormat("la tabla excede el límite de celdas")
+            total_cells += repeat
             text = "".join(
                 str(p) for p in cell.getElementsByType(P)
             )
@@ -165,6 +195,15 @@ def _rows_to_table(rows: list[list]) -> Table:
         if any(cell is not None and cell != "" for cell in row)
     ]
     return Table(columns=columns, rows=body)
+
+
+def _check_shape(rows: int, columns: int) -> None:
+    if rows > MAX_TABLE_ROWS:
+        raise detect.UnsupportedFormat("la tabla excede el límite de filas")
+    if columns > MAX_TABLE_COLUMNS:
+        raise detect.UnsupportedFormat("la tabla excede el límite de columnas")
+    if rows * columns > MAX_TABLE_CELLS:
+        raise detect.UnsupportedFormat("la tabla excede el límite de celdas")
 
 
 def _unique_columns(names: list[str]) -> list[str]:

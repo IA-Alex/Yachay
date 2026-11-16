@@ -10,6 +10,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+
+import pyarrow.parquet as pq
 
 from motor.model import diff, run, store
 from motor.sources.tables import Table
@@ -84,6 +87,65 @@ class RunStoreTests(unittest.TestCase):
     def test_unknown_run_raises(self):
         with self.assertRaises(run.RunNotFound):
             run.get(self.conn, 9999)
+
+    def test_record_persists_private_parquet_and_source_metadata(self):
+        output = Path(self._tmp.name) / "outputs"
+        run_id = run.record(
+            self.conn, self.model_id,
+            table=Table(columns=["a", "b"], rows=[[1, "x"], [2, "y"]]),
+            artifact_dir=output, source_name="input.csv", source_sha256="f" * 64,
+            now=3.0,
+        )
+        saved = run.get(self.conn, run_id)
+        path = output / saved.artifact_path
+        self.assertEqual(saved.source_name, "input.csv")
+        self.assertEqual(saved.source_sha256, "f" * 64)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o640)
+        self.assertEqual(pq.read_table(path).to_pylist(), [{"a": 1, "b": "x"},
+                                                           {"a": 2, "b": "y"}])
+
+    def test_record_stringifies_a_mixed_arrow_column(self):
+        output = Path(self._tmp.name) / "mixed"
+        run_id = run.record(
+            self.conn, self.model_id,
+            table=Table(columns=["v"], rows=[[1], ["uno"]]), artifact_dir=output,
+        )
+        saved = run.get(self.conn, run_id)
+        self.assertEqual(
+            pq.read_table(output / saved.artifact_path).to_pylist(),
+            [{"v": "1"}, {"v": "uno"}],
+        )
+
+    def test_record_rolls_back_and_removes_partial_output_when_write_fails(self):
+        output = Path(self._tmp.name) / "failed"
+        with patch("motor.model.run._write_parquet", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                run.record(self.conn, self.model_id, table=self._table(), artifact_dir=output)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0], 0)
+        self.assertEqual(list(output.iterdir()), [])
+
+    def test_record_closes_descriptor_and_removes_temp_if_permission_setting_fails(self):
+        output = Path(self._tmp.name) / "permission"
+        with patch("motor.model.run.os.fchmod", side_effect=OSError("permission")):
+            with self.assertRaisesRegex(OSError, "permission"):
+                run.record(self.conn, self.model_id, table=self._table(), artifact_dir=output)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0], 0)
+        self.assertEqual(list(output.iterdir()), [])
+
+    def test_record_rollback_without_artifact_when_commit_fails(self):
+        class CommitFailure:
+            def execute(_self, *args):
+                return self.conn.execute(*args)
+
+            def commit(_self):
+                raise OSError("commit failed")
+
+            def rollback(_self):
+                self.conn.rollback()
+
+        with self.assertRaisesRegex(OSError, "commit failed"):
+            run.record(CommitFailure(), self.model_id, table=self._table())
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0], 0)
 
 
 class DiffTests(unittest.TestCase):
