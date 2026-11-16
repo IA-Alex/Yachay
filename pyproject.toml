@@ -8,7 +8,7 @@ license-files = ["LICENSE"]
 authors = [{ name = "Panda", email = "panda@machiyotl.com" }]
 requires-python = ">=3.11,<3.14"
 dependencies = [
-    "duckdb==1.5.6",
+    "duckdb==2.0.0",
     "odfpy==1.4.1",
     "openpyxl==3.1.5",
     "pyarrow==26.0.1",
