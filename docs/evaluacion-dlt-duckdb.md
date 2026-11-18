@@ -29,6 +29,10 @@ La fuente canónica es el documento embebido en
 `state.json_schema.properties.documento_arquitectura.default` de
 `src/documentacion_motor_datos_local/flow.json`; no se modificó.
 
+> **Retirado (2026-11-18):** ese `flow.json` ya no está en el repositorio. Para
+> la evaluación se usó tal cual; hoy la referencia arquitectónica vigente son los
+> ADR de `docs/adr/` y `docs/modelado/ARQUITECTURA-MODELADO.md`.
+
 Responsabilidades actuales de Yachay:
 
 | Componente | Responsabilidad contractual |
@@ -281,6 +285,10 @@ representativas y reconstrucción desde manifests.
 
 Se añadió `src/documentacion_motor_datos_local/ingestion_contract.py` como
 frontera de tipos, sin importar dlt. Define:
+
+> **Retirado (2026-11-18):** el módulo ya no existe en el repositorio. Se
+> conserva la descripción del experimento; el contrato vigente está en
+> `src/motor/`.
 
 - `InputArtifact`: metadatos estables calculados por Yachay (`sha256`, tamaño,
   `job_key` y `run_id`).

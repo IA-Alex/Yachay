@@ -1,5 +1,9 @@
 # Criterios de cierre — Yachay (documentacion_motor_datos_local)
 
+> El nombre del paquete en el título corresponde al artefacto evaluado entonces;
+> fue retirado del repositorio el 2026-11-18. El contenido del dictamen se
+> conserva sin cambios.
+
 - **Fecha:** 2026-11-15
 - **Versión declarada:** `0.1.0` (sin tag Git).
 - **Base de esta revisión:** HEAD `ea0962a` (`fix: repair desktop dataset and CSV worker flows`).

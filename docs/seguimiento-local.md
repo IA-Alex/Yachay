@@ -228,6 +228,9 @@ alcance** de esta versión y ninguno causa fallo funcional observable hoy.
 
 - Parseo JSON, validación del JSON Schema de `state` y parseo TOML: OK.
 - Import de `documentacion_motor_datos_local` y `crewai`: OK.
+  > **Retirado (2026-11-18):** el paquete se eliminó del repositorio y solo
+  > quedaban `.pyc` huérfanos. Esta línea conserva el registro de lo que se
+  > verificó en su momento; no describe el estado actual.
 - `compileall` sobre `src`: OK.
 - Resolución de `[tool.crewai].definition`: OK.
 - Carga declarativa con `Flow.from_declaration`: OK.
@@ -321,6 +324,9 @@ ejercitar y sin la cual la cobertura bajaba a 99%.
 - `docs/adr/ADR-014.md`, `docs/adr/ADR-015.md`: decisiones completas.
 - `src/documentacion_motor_datos_local/flow.json`: filas `014` y `015` en §15 y
   bullet de calibración en §16 (`git diff --numstat` = `1 1`, una línea física).
+  > **Retirado (2026-11-18):** el archivo ya no existe. El cambio descrito se
+  > aplicó al documento canónico embebido en ese `flow.json`, que hoy no está en
+  > el repositorio; la fuente de los principios es el ADR correspondiente.
 - Sin migraciones, sin dependencias nuevas, sin cambios en el `CHECK` de
   estados.
 

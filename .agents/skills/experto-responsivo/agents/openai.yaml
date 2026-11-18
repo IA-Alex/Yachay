@@ -1,0 +1,7 @@
+interface:
+  display_name: "Experto Responsivo"
+  short_description: "Auditoría senior responsive y adaptive"
+  default_prompt: "Usa $experto-responsivo para auditar la adaptación responsive de esta interfaz con evidencia reproducible."
+
+policy:
+  allow_implicit_invocation: true
