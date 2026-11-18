@@ -64,11 +64,19 @@ def build_parser() -> argparse.ArgumentParser:
     m_show.add_argument("model_id", type=int, help="identificador del modelo")
     m_show.add_argument("--root", default=".", help="raíz del proyecto (default: .)")
     m_show.add_argument("--version", type=int, default=None, help="versión a mostrar")
-    m_run = model_sub.add_parser("run", help="ejecutar un modelo sobre un archivo")
-    m_run.add_argument("model_id", type=int, help="identificador del modelo")
-    m_run.add_argument("file", help="archivo de entrada")
-    m_run.add_argument("--root", default=".", help="raíz del proyecto (default: .)")
-    m_run.add_argument("--sheet", default=None, help="hoja a leer (.xlsx/.ods)")
+    m_preview = model_sub.add_parser(
+        "preview",
+        help="aplicar un modelo y ver el resultado sin persistir (M3)",
+        description=(
+            "Aplica las reglas del modelo al archivo y muestra el resultado por "
+            "stdout. No guarda ejecución, huella ni Parquet. Para conservar una "
+            "ejecución comparable usa `yachay model exec`."
+        ),
+    )
+    m_preview.add_argument("model_id", type=int, help="identificador del modelo")
+    m_preview.add_argument("file", help="archivo de entrada")
+    m_preview.add_argument("--root", default=".", help="raíz del proyecto (default: .)")
+    m_preview.add_argument("--sheet", default=None, help="hoja a leer (.xlsx/.ods)")
     m_join = model_sub.add_parser("join", help="cruzar dos archivos (M4)")
     m_join.add_argument("left", help="archivo de la izquierda")
     m_join.add_argument("right", help="archivo de la derecha")
@@ -79,7 +87,15 @@ def build_parser() -> argparse.ArgumentParser:
                         choices=["inner", "left", "anti"],
                         help="tipo de cruce (anti = huérfanos)")
     m_join.add_argument("--root", default=".", help="raíz del proyecto (default: .)")
-    m_exec = model_sub.add_parser("exec", help="ejecutar un modelo y guardar su huella (M5)")
+    m_exec = model_sub.add_parser(
+        "exec",
+        help="aplicar un modelo y persistir la ejecución (M5)",
+        description=(
+            "Aplica las reglas del modelo, guarda una ejecución con su huella y "
+            "escribe el Parquet del resultado. Es la vía para comparar "
+            "ejecuciones con `yachay model diff` y para generar informes."
+        ),
+    )
     m_exec.add_argument("model_id", type=int, help="identificador del modelo")
     m_exec.add_argument("file", help="archivo de entrada (fuente principal)")
     m_exec.add_argument("--root", default=".", help="raíz del proyecto (default: .)")
@@ -177,8 +193,8 @@ def _model(args) -> int:
         print(json.dumps(_model_as_dict(model), ensure_ascii=False, indent=2))
         return 0
 
-    if args.model_command == "run":
-        return _model_run(args, conn)
+    if args.model_command == "preview":
+        return _model_preview(args, conn)
 
     if args.model_command == "join":
         return _model_join(args)
@@ -214,8 +230,12 @@ def _model(args) -> int:
     return 0
 
 
-def _model_run(args, conn) -> int:
-    """Ejecuta un modelo sobre un archivo y muestra el resultado (M3)."""
+def _model_preview(args, conn) -> int:
+    """Aplica un modelo sobre un archivo y muestra el resultado, sin persistir (M3).
+
+    Contrato: este comando nunca escribe en `runs` ni crea Parquet. Persistir es
+    la responsabilidad de `model exec` (M5), que sí registra huella y artefacto.
+    """
     from motor.model import engine, rules, store
     from motor.sources import EmptySheet, SheetNotFound, read_any
     from motor.sources.detect import UnsupportedFormat
@@ -327,7 +347,12 @@ def _model_exec(args, conn) -> int:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
         return 1
 
-    run_id = run.record(conn, args.model_id, table=result, output=entity.name)
+    run_id = run.record(
+        conn, args.model_id, table=result, output=entity.name,
+        lineage=run.describe_lineage(
+            output=entity.name, rules_applied=plan, table=result
+        ),
+    )
     fp = run.fingerprint(result)
     print(json.dumps({
         "ok": True, "run_id": run_id, "model_id": args.model_id,

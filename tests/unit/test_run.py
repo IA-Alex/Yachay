@@ -88,6 +88,48 @@ class RunStoreTests(unittest.TestCase):
         with self.assertRaises(run.RunNotFound):
             run.get(self.conn, 9999)
 
+    def test_lineage_is_stored_and_read_back(self):
+        """H-05: el linaje queda auditable en la ejecución persistida."""
+        from motor.model.rules import Rule
+
+        table = Table(columns=["fecha", "monto"], rows=[["x", 1]])
+        payload = run.describe_lineage(
+            output="m",
+            rules_applied=[Rule(name="cast_monto", type="cast", column="monto",
+                                params={"to": "number"})],
+            table=table,
+        )
+        run_id = run.record(self.conn, self.model_id, table=table, lineage=payload)
+        stored = run.get(self.conn, run_id)
+        self.assertIsNotNone(stored.lineage)
+        self.assertEqual(stored.lineage["output"], "m")
+        self.assertEqual(
+            stored.lineage["rules"][0]["name"], "cast_monto"
+        )
+        self.assertEqual(stored.lineage["types"]["monto"], ["int"])
+
+    def test_a_run_without_lineage_reads_as_unknown(self):
+        """Las ejecuciones anteriores a la columna no fingen un linaje vacío."""
+        run_id = run.record(self.conn, self.model_id, table=self._table())
+        self.assertIsNone(run.get(self.conn, run_id).lineage)
+
+    def test_describe_lineage_records_real_column_types(self):
+        """El tipo importa: una celda datetime no es igual a su ISO como texto."""
+        import datetime
+
+        moment = datetime.datetime(2026, 9, 23)
+        payload = run.describe_lineage(
+            output="m",
+            table=Table(columns=["fecha"], rows=[[moment], ["No registrada"]]),
+        )
+        self.assertEqual(payload["types"]["fecha"], ["datetime", "str"])
+
+    def test_describe_lineage_without_a_table_omits_types(self):
+        """Sin tabla solo se describe el origen; no se inventan tipos."""
+        payload = run.describe_lineage(output="m")
+        self.assertEqual(payload, {"output": "m", "rules": []})
+        self.assertNotIn("types", payload)
+
     def test_record_persists_private_parquet_and_source_metadata(self):
         output = Path(self._tmp.name) / "outputs"
         run_id = run.record(

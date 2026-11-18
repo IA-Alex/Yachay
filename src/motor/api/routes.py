@@ -486,6 +486,9 @@ def _runs_list(ctx: ApiContext, request: Request) -> tuple[int, dict]:
                 "rows": r.fingerprint.rows,
                 "columns": r.fingerprint.columns,
                 "hash": r.fingerprint.hash,
+                # H-05: qué se aplicó al resultado; `None` = ejecución anterior
+                # a la columna `lineage` (linaje desconocido).
+                "lineage": r.lineage,
                 "artifact_available": bool(
                     r.artifact_path
                     and (ctx.paths.model_outputs / r.artifact_path).is_file()
@@ -546,6 +549,9 @@ def _run_create(ctx: ApiContext, request: Request) -> tuple[int, dict]:
             artifact_dir=ctx.paths.model_outputs,
             source_name=source,
             source_sha256=source_hash,
+            lineage=run.describe_lineage(
+                output=entity.name, rules_applied=plan, table=result
+            ),
         )
         fp = run.fingerprint(result)
     finally:

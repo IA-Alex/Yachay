@@ -1423,7 +1423,7 @@ components:
     Run:
       type: object
       additionalProperties: false
-      required: [run_id, created_at, output, rows, columns, hash, artifact_available]
+      required: [run_id, created_at, output, rows, columns, hash, artifact_available, lineage]
       properties:
         run_id:
           type: integer
@@ -1442,6 +1442,19 @@ components:
           type: string
         artifact_available:
           type: boolean
+        lineage:
+          type: [object, "null"]
+          description: |
+            Huella de lo que produjo el resultado: `output`, las `rules`
+            aplicadas y el tipo real de cada columna de salida (`types`).
+
+            `null` significa **linaje desconocido**: la ejecución es anterior a
+            la columna `runs.lineage` (H-05). El cliente no debe interpretarlo
+            como "no se aplicó nada".
+
+            `types` existe para que una diferencia de representación no se
+            confunda con pérdida de datos: una celda `datetime` del origen no es
+            igual, como texto, a su ISO serializado.
 
     RunListData:
       type: object

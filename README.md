@@ -8,7 +8,7 @@ local.
 
 ## Estado
 
-**Implementado y verificado** (535 pruebas, 7 omitidas, 100% de cobertura sobre
+**Implementado y verificado** (535 pruebas, 0 omitidas, 100% de cobertura sobre
 `src/` — gate con `fail_under=100` —, ejecutable con `./scripts/test.sh`):
 
 - Ingesta local: scanner, admisión de disco, cola con 9 estados, lease atómico.
@@ -73,8 +73,11 @@ uv sync --frozen
 .venv/bin/python -m motor model new bitacora hoja.xlsx
 .venv/bin/python -m motor model show 1
 
-# Ejecutar el modelo sobre datos nuevos (M3)
-.venv/bin/python -m motor model run 1 hoja.csv
+# Aplicar el modelo sobre datos nuevos (M3, muestra el resultado sin guardar)
+.venv/bin/python -m motor model preview 1 hoja.csv
+
+# Ejecutar y persistir la ejecución (M5: huella, Parquet e informe)
+.venv/bin/python -m motor model exec 1 hoja.csv
 
 # Worker: procesa la bandeja de entrada
 .venv/bin/python -m motor run --root .
@@ -94,6 +97,17 @@ python -m yachay_desktop --root .     # desde desktop/
 ```bash
 ./scripts/test.sh          # ruff + unittest + coverage
 ```
+
+## Rendimiento
+
+```bash
+.venv/bin/python scripts/bench.py --repeat 3   # perfilado + ejecución + Parquet
+```
+
+Mide sobre datos sintéticos en un directorio temporal (no toca `data/`).
+El motor limita a `MAX_TABLE_ROWS = 100_000` **incluyendo la cabecera**, así que
+el máximo son 99 999 filas de datos; el banco rechaza valores mayores con un
+mensaje explícito.
 
 ## Contrato visual
 

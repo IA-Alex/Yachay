@@ -98,8 +98,15 @@ def create_schema(conn: sqlite3.Connection) -> None:
 def _migrate_run_artifacts(conn: sqlite3.Connection) -> None:
     """Add optional artifact metadata without rewriting existing runs."""
     columns = {row[1] for row in conn.execute("PRAGMA table_info(runs)")}
-    for name, kind in (("artifact_path", "TEXT"), ("source_name", "TEXT"),
-                       ("source_sha256", "TEXT")):
+    for name, kind in (
+        ("artifact_path", "TEXT"),
+        ("source_name", "TEXT"),
+        ("source_sha256", "TEXT"),
+        # H-05: huella de linaje del resultado. Texto libre (JSON serializado)
+        # para no atar el esquema al formato mientras el contrato se asienta.
+        # Las filas anteriores quedan en '' y se leen como "linaje desconocido".
+        ("lineage", "TEXT"),
+    ):
         if name not in columns:
             conn.execute(f"ALTER TABLE runs ADD COLUMN {name} {kind}")
 

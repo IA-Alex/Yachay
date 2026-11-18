@@ -237,8 +237,8 @@ class ModelCliTests(unittest.TestCase):
             self.assertIn('"key": []', out)
 
 
-class ModelRunCliTests(unittest.TestCase):
-    """`yachay model run` aplica las reglas del modelo a un archivo."""
+class ModelPreviewCliTests(unittest.TestCase):
+    """`yachay model preview` aplica las reglas del modelo a un archivo, sin persistir."""
 
     def _run(self, argv):
         import contextlib
@@ -265,31 +265,64 @@ class ModelRunCliTests(unittest.TestCase):
                   column="monto", params={"to": "number"})
         conn.close()
 
-    def test_run_applies_the_model_rules(self):
+    def test_preview_applies_the_model_rules(self):
         with tempfile.TemporaryDirectory() as d:
             self._model_with_a_cast(d)
-            code, out = self._run(["model", "run", "1", str(Path(d) / "m.csv"), "--root", d])
+            code, out = self._run(["model", "preview", "1", str(Path(d) / "m.csv"), "--root", d])
             self.assertEqual(code, 0)
             self.assertIn('"rows_out": 2', out)
 
-    def test_run_rejects_an_unknown_model(self):
+    def test_preview_does_not_persist_a_run(self):
+        """Contrato H-04: `preview` muestra y no guarda; `exec` es quien persiste."""
+        from motor.config import MotorConfig
+        from motor.storage.db import connect
+
+        with tempfile.TemporaryDirectory() as d:
+            self._model_with_a_cast(d)
+            source = str(Path(d) / "m.csv")
+
+            code, _ = self._run(["model", "preview", "1", source, "--root", d])
+            self.assertEqual(code, 0)
+            cfg = MotorConfig.from_root(Path(d))
+            conn = connect(cfg.paths.sqlite_path)
+            try:
+                self.assertEqual(
+                    conn.execute("SELECT count(*) FROM runs").fetchone()[0], 0,
+                    "preview no debe crear filas en runs",
+                )
+            finally:
+                conn.close()
+
+            code, out = self._run(["model", "exec", "1", source, "--root", d])
+            self.assertEqual(code, 0)
+            self.assertIn('"run_id"', out)
+            conn = connect(cfg.paths.sqlite_path)
+            try:
+                self.assertEqual(
+                    conn.execute("SELECT count(*) FROM runs").fetchone()[0], 1,
+                    "exec debe persistir exactamente una ejecución",
+                )
+            finally:
+                conn.close()
+
+    def test_preview_rejects_an_unknown_model(self):
         with tempfile.TemporaryDirectory() as d:
             csv = Path(d) / "x.csv"
             csv.write_text("a\n1\n", encoding="utf-8")
-            code, out = self._run(["model", "run", "9999", str(csv), "--root", d])
+            code, out = self._run(["model", "preview", "9999", str(csv), "--root", d])
             self.assertEqual(code, 1)
             self.assertIn("no existe", out)
 
-    def test_run_reports_an_unsupported_file(self):
+    def test_preview_reports_an_unsupported_file(self):
         with tempfile.TemporaryDirectory() as d:
             self._model_with_a_cast(d)
             bad = Path(d) / "foto.png"
             bad.write_bytes(b"\x89PNG")
-            code, out = self._run(["model", "run", "1", str(bad), "--root", d])
+            code, out = self._run(["model", "preview", "1", str(bad), "--root", d])
             self.assertEqual(code, 1)
             self.assertIn("no soportado", out)
 
-    def test_run_reports_an_engine_error(self):
+    def test_preview_reports_an_engine_error(self):
         with tempfile.TemporaryDirectory() as d:
             # Modelo sin reglas válidas para el archivo: una regla sobre una
             # columna que el archivo no trae → EngineError, no traza cruda.
@@ -308,7 +341,7 @@ class ModelRunCliTests(unittest.TestCase):
 
             other = Path(d) / "otro.csv"
             other.write_text("ciudad\nCusco\n", encoding="utf-8")
-            code, out = self._run(["model", "run", "1", str(other), "--root", d])
+            code, out = self._run(["model", "preview", "1", str(other), "--root", d])
             self.assertEqual(code, 1)
             self.assertIn("no existe en la tabla", out)
 

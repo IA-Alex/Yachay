@@ -16,6 +16,7 @@ import os
 import sqlite3
 import tempfile
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -53,6 +54,45 @@ class RunRecord:
     artifact_path: str | None = None
     source_name: str | None = None
     source_sha256: str | None = None
+    # None = desconocido (ejecuciones anteriores a la columna `lineage`, H-05).
+    lineage: dict | None = None
+
+
+def describe_lineage(
+    *,
+    output: str,
+    rules_applied: Sequence[Rule] = (),
+    table: Table | None = None,
+) -> dict:
+    """Describe qué se aplicó al resultado, para `runs.lineage` (H-05).
+
+    Registra las reglas aplicadas y el tipo real de cada columna de salida. El
+    tipo importa: una celda `datetime` del origen no se compara por igualdad de
+    texto contra un ISO serializado, y sin esta huella la diferencia parece una
+    pérdida de datos en lugar de una diferencia de representación.
+
+    Devuelve JSON-serializable en todo momento.
+    """
+    payload: dict = {
+        "output": output,
+        "rules": [
+            {
+                "name": rule.name,
+                "type": rule.type,
+                "column": rule.column,
+                "params": rule.params or {},
+            }
+            for rule in rules_applied
+        ],
+    }
+    if table is not None:
+        # Un solo recorrido de filas: no duplicamos memoria en tablas grandes.
+        types: dict[str, set[str]] = {column: set() for column in table.columns}
+        for row in table.rows:
+            for column, value in zip(table.columns, row, strict=False):
+                types[column].add(type(value).__name__)
+        payload["types"] = {column: sorted(names) for column, names in types.items()}
+    return payload
 
 
 def fingerprint(table: Table) -> Fingerprint:
@@ -161,11 +201,19 @@ def record(
     artifact_dir: Path | None = None,
     source_name: str | None = None,
     source_sha256: str | None = None,
+    lineage: dict | None = None,
     now: float | None = None,
 ) -> int:
-    """Guarda la huella y, opcionalmente, un Parquet local del resultado."""
+    """Guarda la huella y, opcionalmente, un Parquet local del resultado.
+
+    ``lineage`` registra qué se aplicó al resultado (origen, reglas y tipos de
+    columna) para que la conciliación sea auditable. Se serializa a JSON; ``None``
+    se guarda como ``""``, que se lee como "linaje desconocido" en filas
+    anteriores a esta columna (H-05).
+    """
     fp = fingerprint(table)
     at = time.time() if now is None else now
+    lineage_json = "" if lineage is None else json.dumps(lineage, ensure_ascii=False)
     artifact: Path | None = None
     temporary: Path | None = None
     descriptor: int | None = None
@@ -173,9 +221,9 @@ def record(
     try:
         cur = conn.execute(
             "INSERT INTO runs (model_id, created_at, output, columns, rows_count, hash, "
-            "source_name, source_sha256) VALUES (?,?,?,?,?,?,?,?)",
+            "source_name, source_sha256, lineage) VALUES (?,?,?,?,?,?,?,?,?)",
             (model_id, at, output, json.dumps(fp.columns), fp.rows, fp.hash,
-             source_name, source_sha256),
+             source_name, source_sha256, lineage_json),
         )
         run_id = int(cur.lastrowid)
         if artifact_dir is not None:
@@ -237,7 +285,7 @@ def get(conn: sqlite3.Connection, run_id: int) -> RunRecord:
     """Lee una ejecución por su identificador."""
     row = conn.execute(
         "SELECT run_id, model_id, created_at, output, columns, rows_count, hash, "
-        "artifact_path, source_name, source_sha256 "
+        "artifact_path, source_name, source_sha256, lineage "
         "FROM runs WHERE run_id = ?",
         (run_id,),
     ).fetchone()
@@ -252,7 +300,7 @@ def list_for(conn: sqlite3.Connection, model_id: int) -> list[RunRecord]:
         _record_from(row)
         for row in conn.execute(
             "SELECT run_id, model_id, created_at, output, columns, rows_count, hash, "
-            "artifact_path, source_name, source_sha256 "
+            "artifact_path, source_name, source_sha256, lineage "
             "FROM runs WHERE model_id = ? ORDER BY created_at DESC, run_id DESC",
             (model_id,),
         ).fetchall()
@@ -272,4 +320,5 @@ def _record_from(row) -> RunRecord:
         artifact_path=metadata[0] if metadata else None,
         source_name=metadata[1] if len(metadata) > 1 else None,
         source_sha256=metadata[2] if len(metadata) > 2 else None,
+        lineage=json.loads(metadata[3]) if len(metadata) > 3 and metadata[3] else None,
     )
