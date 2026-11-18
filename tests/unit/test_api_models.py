@@ -51,7 +51,18 @@ class ModelsApiTests(unittest.TestCase):
 
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
-        self.addCleanup(self.server.server_close)
+        # `server_close()` alone leaves `serve_forever` blocked in `accept()`, so
+        # the thread outlives the test and every later test leaks one more. The
+        # leaked threads made a *later* Tk teardown abort the process
+        # (`Tcl_AsyncDelete: async handler deleted by the wrong thread`), which
+        # made the gate fail at random. `shutdown()` is what stops the loop.
+        self.addCleanup(self._stop_server)
+
+    def _stop_server(self):
+        """Detiene el servidor y espera a su hilo antes de liberar el socket."""
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(5)
 
     def call(self, method, path, *, body=None, headers=None):
         conn = _UnixHTTP(self.socket_path)
@@ -228,7 +239,15 @@ class RulesApiTests(unittest.TestCase):
 
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
-        self.addCleanup(self.server.server_close)
+        # Mismo defecto que en `ModelsApiTests`: sin `shutdown()` el hilo queda
+        # bloqueado en `accept()` y sobrevive a la clase. Ver el comentario allí.
+        self.addCleanup(self._stop_server)
+
+    def _stop_server(self):
+        """Detiene el servidor y espera a su hilo antes de liberar el socket."""
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(5)
 
     def call(self, method, path, *, body=None, headers=None):
         conn = _UnixHTTP(self.socket_path)

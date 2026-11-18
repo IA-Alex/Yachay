@@ -10,6 +10,7 @@ from __future__ import annotations
 import http.client
 import io
 import json
+import os
 import re
 import signal
 import socket
@@ -868,15 +869,20 @@ class OpenApiContractTests(unittest.TestCase):
 
     `docs/api/openapi.yaml` es la fuente de contrato; estas comprobaciones la
     atan a las tablas de rutas, a los códigos de error y a los estados reales.
-    Se saltan si PyYAML no está disponible: es una dependencia transitiva, no
-    una del proyecto, y el gate no debe exigirla.
+    PyYAML es dependencia del grupo `dev`, así que en el gate estas pruebas
+    siempre se ejecutan; omitirlas era el hallazgo H-02 (el contrato dejaba de
+    atarse al código sin que nadie lo notara).
     """
 
     def setUp(self):
         try:
             import yaml  # noqa: F401
         except ImportError:  # pragma: no cover - depende del entorno
-            raise unittest.SkipTest("PyYAML no está disponible") from None
+            if os.environ.get("YACHAY_REQUIRE_OPENAPI_CONTRACT"):
+                raise
+            raise unittest.SkipTest(
+                "PyYAML no está disponible (instala el grupo dev)"
+            ) from None
         self.spec_path = Path(__file__).resolve().parents[2] / "docs" / "api" / "openapi.yaml"
         if not self.spec_path.exists():  # pragma: no cover - documento ausente
             raise unittest.SkipTest("no existe docs/api/openapi.yaml")

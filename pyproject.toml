@@ -24,6 +24,10 @@ yachay-desktop = "yachay_desktop.app:main"
 dev = [
     "coverage>=7.6",
     "ruff>=0.9",
+    # El contrato de la API (`tests/unit/test_api.py::OpenApiContractTests`) valida
+    # `docs/api/openapi.yaml`; sin PyYAML los cinco chequeos se omiten en silencio
+    # y el gate deja de atar la especificación al código (hallazgo H-02).
+    "pyyaml==6.0.3",
 ]
 
 [build-system]

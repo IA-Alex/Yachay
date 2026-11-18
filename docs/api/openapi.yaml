@@ -271,6 +271,20 @@ paths:
       tags: [datasets]
       operationId: listDatasets
       summary: Lista los datasets publicados.
+      description: |
+        Catálogo de **resultados de ingesta publicados**, no de ejecuciones de
+        modelo. Una entrada de `datasets` nace de un commit del worker (ADR-014,
+        clave `job_key`) y sobrevive porque su manifest vive en `processed/`; es
+        la unidad que la retención y el GC protegen.
+
+        Las ejecuciones de modelo son un concepto distinto y **no aparecen
+        aquí**: se descubren con `GET /v1/models/{model_id}/runs`, que expone
+        `run_id`, `hash` y `artifact_available`, y su Parquet se sirve mediante
+        `POST /v1/models/{model_id}/runs/{run_id}/report`. Por eso un `run_id`
+        de modelo no resuelve en `/v1/datasets/{run_id}/manifest` (404).
+
+        Un cliente que necesite "dónde están mis resultados" debe consultar
+        ambos catálogos según el origen del artefacto.
       parameters:
         - $ref: "#/components/parameters/Limit"
       responses:
@@ -847,6 +861,7 @@ components:
       description: Conjunto cerrado de códigos de error (ADR-016 §3).
       enum:
         - bad_request
+        - unauthorized
         - not_found
         - method_not_allowed
         - invalid_state
