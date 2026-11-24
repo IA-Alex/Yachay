@@ -501,37 +501,57 @@ def _runs_list(ctx: ApiContext, request: Request) -> tuple[int, dict]:
 
 
 def _run_create(ctx: ApiContext, request: Request) -> tuple[int, dict]:
-    """Ejecuta un modelo sobre una fuente cargada y guarda la huella (M6)."""
-    from motor.model import rules, run, store
+    """Ejecuta un modelo con una o varias fuentes y guarda la huella (B2/M6)."""
+    from motor.model import engine, rules, run, store
     from motor.sources import EmptySheet, SheetNotFound, read_any
     from motor.sources.detect import UnsupportedFormat
 
     model_id = _int_param(request, "model_id")
-    source = _one(request.query, "source")
-    if not source:
-        raise ApiError(ErrorCode.BAD_REQUEST, "se requiere `source`")
-    if not _SAFE_NAME.match(source):
-        raise ApiError(ErrorCode.BAD_REQUEST, "el nombre debe ser un nombre simple")
+    sources = request.query.get("source", [])
+    if not sources or any(not source for source in sources):
+        raise ApiError(
+            ErrorCode.BAD_REQUEST, "se requiere al menos un parámetro `source` no vacío"
+        )
+    if len(sources) > 20:
+        raise ApiError(
+            ErrorCode.BAD_REQUEST, "se permiten como máximo 20 fuentes por ejecución"
+        )
+    if len(set(sources)) != len(sources):
+        raise ApiError(ErrorCode.BAD_REQUEST, "no se permiten fuentes duplicadas")
+    if any(not _SAFE_NAME.match(source) for source in sources):
+        raise ApiError(ErrorCode.BAD_REQUEST, "cada fuente debe ser un nombre simple")
 
     conn = ctx.connect()
     try:
         model = _require_model(conn, store, model_id)
-        path = _model_input_path(ctx, source)
-        if not path.is_file():
-            raise ApiError(ErrorCode.NOT_FOUND, f"no existe el archivo {source!r}")
         if not model.entities:
             raise ApiError(ErrorCode.INVALID_STATE, "el modelo no tiene entidades")
         entity = model.entities[0]
 
+        paths = [_model_input_path(ctx, source) for source in sources]
+        for source, path in zip(sources, paths, strict=True):
+            if not path.is_file():
+                raise ApiError(ErrorCode.NOT_FOUND, f"no existe el archivo {source!r}")
+
+        tables = []
         try:
-            table = read_any(path)
+            for path in paths:
+                tables.append(read_any(path))
         except (UnsupportedFormat, SheetNotFound, EmptySheet) as exc:
             raise ApiError(ErrorCode.BAD_REQUEST, str(exc)) from None
+
+        if len(tables) > 1:
+            try:
+                input_table = engine.append_tables(tables)
+            except engine.EngineError as exc:
+                raise ApiError(ErrorCode.BAD_REQUEST, str(exc)) from None
+        else:
+            input_table = tables[0]
 
         plan = rules.list_for(conn, model_id)
         try:
             result = run.execute(
-                {entity.name: table},
+                {entity.name: input_table},
                 rules_by_source={entity.name: plan},
                 join_plan=[],
                 output=entity.name,
@@ -539,19 +559,40 @@ def _run_create(ctx: ApiContext, request: Request) -> tuple[int, dict]:
         except run.RunError as exc:
             raise ApiError(ErrorCode.BAD_REQUEST, str(exc)) from None
 
-        with path.open("rb") as source_file:
-            source_hash = hashlib.file_digest(source_file, "sha256").hexdigest()
+        source_hashes = []
+        for source, path in zip(sources, paths, strict=True):
+            with path.open("rb") as source_file:
+                source_hashes.append(
+                    {
+                        "name": source,
+                        "sha256": hashlib.file_digest(source_file, "sha256").hexdigest(),
+                    }
+                )
+        if len(source_hashes) == 1:
+            source_hash = source_hashes[0]["sha256"]
+            stored_source_name = sources[0]
+        else:
+            source_hash = hashlib.sha256(
+                json.dumps(
+                    source_hashes, ensure_ascii=False, separators=(",", ":")
+                ).encode("utf-8")
+            ).hexdigest()
+            stored_source_name = json.dumps(sources, ensure_ascii=False)
+        lineage = run.describe_lineage(
+            output=entity.name, rules_applied=plan, table=result
+        )
+        lineage["sources"] = source_hashes
+        if len(sources) > 1:
+            lineage["operation"] = "append"
         run_id = run.record(
             conn,
             model_id,
             table=result,
             output=entity.name,
             artifact_dir=ctx.paths.model_outputs,
-            source_name=source,
+            source_name=stored_source_name,
             source_sha256=source_hash,
-            lineage=run.describe_lineage(
-                output=entity.name, rules_applied=plan, table=result
-            ),
+            lineage=lineage,
         )
         fp = run.fingerprint(result)
     finally:
@@ -562,6 +603,8 @@ def _run_create(ctx: ApiContext, request: Request) -> tuple[int, dict]:
         "columns": fp.columns,
         "rows_out": fp.rows,
         "hash": fp.hash,
+        "sources": sources,
+        "operation": "append" if len(sources) > 1 else "single_source",
     }
 
 

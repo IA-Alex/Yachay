@@ -437,16 +437,22 @@ paths:
     post:
       tags: [runs]
       operationId: createRun
-      summary: Ejecuta el modelo y conserva Parquet local y huella.
+      summary: Apila una o varias fuentes compatibles, ejecuta el modelo y conserva Parquet local y huella.
       parameters:
         - $ref: "#/components/parameters/ModelId"
         - name: source
           in: query
           required: true
-          description: Nombre simple del archivo cargado; acepta cargas anteriores que sigan en `inbox/`.
+          style: form
+          explode: true
+          description: Nombre simple del archivo cargado. Repetir `source` apila fuentes en el orden indicado; admite hasta 20 y requiere cabeceras idénticas en el mismo orden.
           schema:
-            type: string
-            pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$"
+            type: array
+            minItems: 1
+            maxItems: 20
+            items:
+              type: string
+              pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$"
       responses:
         "201":
           description: Ejecución registrada con su huella y resultado local.
@@ -1480,7 +1486,7 @@ components:
     RunCreateData:
       type: object
       additionalProperties: false
-      required: [run_id, model_id, columns, rows_out, hash]
+      required: [run_id, model_id, columns, rows_out, hash, sources, operation]
       properties:
         run_id:
           type: integer
@@ -1494,6 +1500,13 @@ components:
           type: integer
         hash:
           type: string
+        sources:
+          type: array
+          items:
+            type: string
+        operation:
+          type: string
+          enum: [single_source, append]
     ReportEnvelope:
       allOf:
         - $ref: "#/components/schemas/SuccessEnvelope"

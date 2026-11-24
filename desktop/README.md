@@ -48,7 +48,7 @@ código 1 en lugar de fallar con una traza.
 | **Panel de estado** (`Ctrl+1`) | `GET /v1/health` + conteos de jobs/datasets | — |
 | **Cargar archivo** (`Ctrl+2`) | `POST /v1/inputs?name=` + `GET /v1/profile?name=` | Depositar y perfilar |
 | **Modelo** (`Ctrl+3`) | `GET /v1/models` + `POST /v1/models?name=&source=` | Crear modelo |
-| **Ejecutar** (`Ctrl+4`) | `POST /v1/models/{id}/runs?source=` | Ejecutar y ver la huella |
+| **Ejecutar** (`Ctrl+4`) | `POST /v1/models/{id}/runs?source=` repetido | Ejecutar con varias fuentes separadas por `;` y ver la huella |
 | **Resultados** (`Ctrl+5`) | `GET /v1/models/{id}/runs` + `GET /v1/diff` | Comparar dos ejecuciones |
 | **Cola de trabajos** (`Ctrl+6`) | `GET /v1/jobs` (filtro por estado) | Cancelar / Reintentar |
 | **Catálogo de datasets** (`Ctrl+7`) | `GET /v1/datasets` | Ver manifest |

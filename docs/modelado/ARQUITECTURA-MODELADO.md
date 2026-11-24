@@ -29,7 +29,9 @@ ingesta, no al catálogo del modelo.
 | **C7** | Perfilado de datos | Nulos, duplicados, rangos, cardinalidad por columna | DuckDB agrega y cuenta |
 | **C3** | Estándares de nombres | Unificar vocabulario (mapa de valores: `Cuzco→Cusco`) | Tabla de mapeo en SQLite |
 | **C4** | Dominios / valores permitidos | Listas cerradas válidas por columna | CHECK declarado en el modelo |
-| **B2** | Merge / Append | Unir hojas (apiladas o por columnas) | DuckDB `UNION ALL` / proyección |
+| **B2** | Append vertical | Apilar filas de varias fuentes con los mismos nombres de columna y en el mismo orden; conserva duplicados | DuckDB `UNION ALL` |
+
+La implementación B2 admite append vertical. La combinación horizontal por clave queda dentro de B3 (joins); alinear fuentes con esquemas distintos requiere una definición funcional aparte.
 
 ### Nivel 2 — Simples (definición de esquema)
 
@@ -135,7 +137,7 @@ transformación: **DuckDB sigue siendo el único motor** (ADR-002).
 
 | Función | Dónde se ejecuta | Pieza |
 | --- | --- | --- |
-| B1, B2, B3, B4* | SQL de transformación | DuckDB |
+| B1, B2 (append vertical), B3, B4* | SQL de transformación | DuckDB |
 | C7 | SQL de agregación | DuckDB |
 | C3, C4 | Mapa + CHECK en el modelo | SQLite + SQL |
 | C5 | Anti-join | DuckDB |
@@ -165,7 +167,7 @@ transformación: **DuckDB sigue siendo el único motor** (ADR-002).
 | --- | --- | --- | --- | --- |
 | **M1** | Lectura de Excel/CSV + perfilar | C7 | — | ✅ entregada |
 | **M2** | Definir el modelo: entidades, atributos, claves | A1, A2 | M1 | ✅ entregada |
-| **M3** | Transformar: shape, merge, estándares, dominios | B1, B2, C3, C4 | M2 | ✅ entregada |
+| **M3** | Transformar: shape, merge, estándares, dominios | B1, B2 (append vertical), C3, C4 | M2 | ✅ entregada |
 | **M4** | Cruzar: joins + integridad referencial | B3, C5 | M2 | ✅ entregada |
 | **M5** | Repetir: automatización + diff de versiones | E4, D1 | M3, M4 | ✅ entregada |
 | **M6** | UI: modelo y resultados | todas | M5 | ✅ entregada |

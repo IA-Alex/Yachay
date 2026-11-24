@@ -69,6 +69,42 @@ def _load(con: duckdb.DuckDBPyConnection, table: Table, name: str = "t") -> None
         con.execute(insert, values)
 
 
+def append_tables(tables: list[Table]) -> Table:
+    """Apila filas de tablas con columnas idénticas mediante ``UNION ALL``.
+
+    El orden de las tablas y de sus filas se conserva. Las cabeceras deben
+    coincidir exactamente y en el mismo orden; no se infieren columnas ni se
+    descartan duplicados.
+    """
+    if len(tables) < 2:
+        raise EngineError("append requiere al menos dos tablas")
+    expected = tables[0].columns
+    if not expected:
+        raise EngineError("la tabla no tiene columnas")
+    for index, table in enumerate(tables[1:], start=2):
+        if table.columns != expected:
+            raise EngineError(
+                f"la fuente {index} tiene columnas distintas; "
+                f"se esperaba {expected!r} y se recibió {table.columns!r}"
+            )
+
+    con = duckdb.connect(":memory:")
+    try:
+        names = [f"append_{index}" for index in range(len(tables))]
+        for name, table in zip(names, tables, strict=True):
+            _load(con, table, name=name)
+        query = " UNION ALL ".join(
+            f"SELECT * FROM {_ident(name)}" for name in names
+        )
+        try:
+            rows = [list(row) for row in con.execute(query).fetchall()]
+        except duckdb.Error as exc:  # pragma: no cover - defensa en profundidad
+            raise EngineError(str(exc)) from exc
+        return Table(columns=list(expected), rows=rows)
+    finally:
+        con.close()
+
+
 def _as_table(con: duckdb.DuckDBPyConnection, relation: str) -> Table:
     """Materializa una relación de DuckDB como :class:`Table`."""
     cursor = con.execute(f"SELECT * FROM {relation}")

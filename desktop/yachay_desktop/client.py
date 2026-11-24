@@ -286,11 +286,16 @@ class ApiClient:
         data = self._request("GET", f"/v1/models/{model_id}/runs")
         return data.get("runs", [])
 
-    def execute(self, model_id: int, source: str) -> dict:
-        """`POST /v1/models/{id}/runs?source=` → ejecuta y guarda la huella."""
-        return self._request(
-            "POST", f"/v1/models/{model_id}/runs?source={quote(source, safe='')}"
+    def execute(self, model_id: int, source: str | list[str]) -> dict:
+        """`POST /v1/models/{id}/runs?source=`; repetir `source` habilita append.
+
+        Una cadena conserva compatibilidad con las llamadas existentes.
+        """
+        sources = [source] if isinstance(source, str) else list(source)
+        query = "&".join(
+            f"source={quote(item)}" for item in sources
         )
+        return self._request("POST", f"/v1/models/{model_id}/runs?{query}")
 
     def generate_report(self, model_id: int, run_id: int) -> dict:
         """Generate a local self-contained visual report for a stored run."""
