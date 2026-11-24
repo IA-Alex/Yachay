@@ -27,7 +27,7 @@ dev = [
     # El contrato de la API (`tests/unit/test_api.py::OpenApiContractTests`) valida
     # `docs/api/openapi.yaml`; sin PyYAML los cinco chequeos se omiten en silencio
     # y el gate deja de atar la especificación al código (hallazgo H-02).
-    "pyyaml==6.0.3",
+    "pyyaml==6.0.4",
 ]
 
 [build-system]
