@@ -1451,8 +1451,9 @@ components:
         lineage:
           type: [object, "null"]
           description: |
-            Huella de lo que produjo el resultado: `output`, las `rules`
-            aplicadas y el tipo real de cada columna de salida (`types`).
+            Metadatos de reproducción: `output`, `rules` aplicadas, tipo real
+            de columnas (`types`), `engine_version`, `model_version`, `sources`
+            con nombre/SHA-256 y `parameters` de la operación.
 
             `null` significa **linaje desconocido**: la ejecución es anterior a
             la columna `runs.lineage` (H-05). El cliente no debe interpretarlo
@@ -1460,7 +1461,8 @@ components:
 
             `types` existe para que una diferencia de representación no se
             confunda con pérdida de datos: una celda `datetime` del origen no es
-            igual, como texto, a su ISO serializado.
+            igual, como texto, a su ISO serializado. Campos de procedencia pueden
+            estar ausentes en ejecuciones históricas; no incluyen valores de celdas.
 
     RunListData:
       type: object

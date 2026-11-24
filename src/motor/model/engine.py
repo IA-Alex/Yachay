@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import duckdb
 
+from motor.limits import MAX_TABLE_CELLS, MAX_TABLE_COLUMNS, MAX_TABLE_ROWS
 from motor.model import joins as joins_module
 from motor.model.rules import RULE_TYPES, Rule, expression_for
 from motor.sources.tables import Table
@@ -103,6 +104,119 @@ def append_tables(tables: list[Table]) -> Table:
         return Table(columns=list(expected), rows=rows)
     finally:
         con.close()
+
+
+def align_tables(
+    tables: list[Table],
+    *,
+    column_maps: list[dict[str, str]] | None = None,
+    columns: list[str] | None = None,
+) -> tuple[Table, dict]:
+    """Alinea esquemas por nombre y apila filas, declarando ausencias.
+
+    El orden canónico predeterminado es el primer orden de aparición entre las
+    fuentes. `column_maps` contiene un mapa por fuente (nombre original → nombre
+    canónico); `columns` permite fijar el orden y el conjunto final de columnas.
+    A diferencia de :func:`append_tables`, nunca cambia el append estricto.
+    """
+    if len(tables) < 2:
+        raise EngineError("la alineación requiere al menos dos tablas")
+    maps = [{} for _ in tables] if column_maps is None else column_maps
+    if len(maps) != len(tables):
+        raise EngineError("debe existir un mapa de columnas por fuente")
+
+    mapped: list[dict[str, int]] = []
+    ordered: list[str] = []
+    source_report = []
+    for source_index, (table, mapping) in enumerate(zip(tables, maps, strict=True), start=1):
+        if not isinstance(mapping, dict):
+            raise EngineError(f"el mapa de la fuente {source_index} debe ser un objeto")
+        unknown_names = sorted(set(mapping) - set(table.columns))
+        if unknown_names:
+            raise EngineError(
+                f"el mapa de la fuente {source_index} contiene columnas desconocidas: "
+                f"{unknown_names!r}"
+            )
+        source_columns: dict[str, int] = {}
+        for index, original in enumerate(table.columns):
+            canonical = mapping.get(original, original)
+            if not isinstance(canonical, str) or not canonical.strip():
+                raise EngineError("los nombres canónicos deben ser texto no vacío")
+            if canonical in source_columns:
+                raise EngineError(
+                    f"la fuente {source_index} mapea más de una columna a {canonical!r}"
+                )
+            source_columns[canonical] = index
+            if canonical not in ordered:
+                ordered.append(canonical)
+        mapped.append(source_columns)
+
+    if columns is not None and not isinstance(columns, list):
+        raise EngineError("el esquema final debe ser una lista de columnas")
+    final_columns = list(columns) if columns is not None else ordered
+    if any(not isinstance(column, str) or not column.strip() for column in final_columns):
+        raise EngineError("los nombres de columna final deben ser texto no vacío")
+    if not final_columns or len(set(final_columns)) != len(final_columns):
+        raise EngineError("el esquema final debe tener columnas únicas")
+    if len(final_columns) > MAX_TABLE_COLUMNS:
+        raise EngineError("el esquema final excede el límite de columnas")
+
+    aligned_rows: list[list] = []
+    for table, indexes in zip(tables, mapped, strict=True):
+        for row in table.rows:
+            if len(aligned_rows) + 2 > MAX_TABLE_ROWS:
+                raise EngineError("la tabla alineada excede el límite de filas")
+            if (len(aligned_rows) + 2) * len(final_columns) > MAX_TABLE_CELLS:
+                raise EngineError("la tabla alineada excede el límite de celdas")
+            aligned_rows.append([
+                row[indexes[column]] if column in indexes and indexes[column] < len(row) else None
+                for column in final_columns
+            ])
+    for source_index, indexes in enumerate(mapped, start=1):
+        source_report.append({
+            "source": source_index,
+            "missing_columns": [column for column in final_columns if column not in indexes],
+            "unmapped_columns": sorted(set(indexes) - set(final_columns)),
+            "rows": len(tables[source_index - 1].rows),
+        })
+    return Table(columns=final_columns, rows=aligned_rows), {
+        "columns": final_columns,
+        "rows": len(aligned_rows),
+        "omitted_columns": sorted(set(ordered) - set(final_columns)),
+        "sources": source_report,
+    }
+
+
+def deduplicate(
+    table: Table, *, keys: list[str], keep: str = "first"
+) -> tuple[Table, dict]:
+    """Elimina duplicados por clave explícita y conserva el orden de entrada."""
+    if not keys:
+        raise EngineError("la deduplicación necesita al menos una clave")
+    if keep not in ("first", "last"):
+        raise EngineError("`keep` debe ser `first` o `last`")
+    unknown = [key for key in keys if key not in table.columns]
+    if unknown:
+        raise EngineError(f"claves desconocidas: {unknown!r}")
+    indexes = [table.columns.index(key) for key in keys]
+    selected: dict[tuple, int] = {}
+    order = range(len(table.rows)) if keep == "first" else range(len(table.rows) - 1, -1, -1)
+    for row_index in order:
+        row = table.rows[row_index]
+        key = tuple(row[index] if index < len(row) else None for index in indexes)
+        if any(value is None or value == "" for value in key):
+            # A missing key cannot identify a record; preserve it as its own row.
+            key = (*key, "__yachay_missing_key__", row_index)
+        selected.setdefault(key, row_index)
+    retained = sorted(selected.values())
+    rows = [table.rows[index] for index in retained]
+    return Table(columns=list(table.columns), rows=rows), {
+        "rows_in": len(table.rows),
+        "rows_out": len(rows),
+        "duplicates_removed": len(table.rows) - len(rows),
+        "keys": list(keys),
+        "kept": keep,
+    }
 
 
 def _as_table(con: duckdb.DuckDBPyConnection, relation: str) -> Table:

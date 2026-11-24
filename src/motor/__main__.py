@@ -8,6 +8,7 @@ Inspect an input: `yachay inspect ARCHIVO [--sheet HOJA]` (ADR-019, M1).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -87,6 +88,48 @@ def build_parser() -> argparse.ArgumentParser:
                         choices=["inner", "left", "anti"],
                         help="tipo de cruce (anti = huérfanos)")
     m_join.add_argument("--root", default=".", help="raíz del proyecto (default: .)")
+    m_align = model_sub.add_parser(
+        "align", help="alinear esquemas distintos y apilar tablas locales"
+    )
+    m_align.add_argument("files", nargs="+", help="dos o más fuentes tabulares")
+    m_align.add_argument(
+        "--column-maps", default=None,
+        help="JSON con un objeto de mapeo por archivo, en el mismo orden",
+    )
+    m_align.add_argument(
+        "--columns", default=None,
+        help="orden y columnas finales separados por coma (por defecto, unión estable)",
+    )
+    m_align.add_argument("--output", default=None, help="archivo nuevo de salida (.csv/.xlsx/.ods)")
+    m_align.add_argument("--sheet", default=None, help="hoja a leer en cada fuente")
+    m_align.add_argument("--root", default=".", help="raíz del proyecto (default: .)")
+    m_validate = model_sub.add_parser(
+        "validate", help="validar filas con un contrato JSON local"
+    )
+    m_validate.add_argument("file", help="fuente tabular local")
+    m_validate.add_argument("rules", help="archivo JSON con reglas de calidad")
+    m_validate.add_argument("--errors-output", default=None,
+                            help="archivo nuevo con filas y motivos de error")
+    m_validate.add_argument("--sheet", default=None, help="hoja a leer en XLSX/ODS")
+    m_validate.add_argument("--root", default=".", help="raíz del proyecto (default: .)")
+    m_dedupe = model_sub.add_parser(
+        "dedupe", help="eliminar duplicados por clave declarada"
+    )
+    m_dedupe.add_argument("file", help="fuente tabular local")
+    m_dedupe.add_argument("--key", required=True, help="columnas clave separadas por coma")
+    m_dedupe.add_argument("--keep", choices=["first", "last"], default="first")
+    m_dedupe.add_argument("--output", default=None, help="archivo nuevo deduplicado")
+    m_dedupe.add_argument("--sheet", default=None, help="hoja a leer en XLSX/ODS")
+    m_dedupe.add_argument("--root", default=".", help="raíz del proyecto (default: .)")
+    m_transform = model_sub.add_parser(
+        "transform", help="aplicar una transformación local declarada en JSON"
+    )
+    m_transform.add_argument("file", help="fuente tabular local")
+    m_transform.add_argument("spec", help="archivo JSON con una operación declarativa")
+    m_transform.add_argument("--output", required=True,
+                             help="archivo local nuevo (.csv/.xlsx/.ods)")
+    m_transform.add_argument("--sheet", default=None, help="hoja a leer en XLSX/ODS")
+    m_transform.add_argument("--root", default=".", help="raíz del proyecto (default: .)")
     m_exec = model_sub.add_parser(
         "exec",
         help="aplicar un modelo y persistir la ejecución (M5)",
@@ -104,6 +147,22 @@ def build_parser() -> argparse.ArgumentParser:
     m_diff.add_argument("run_a", type=int, help="ejecución anterior")
     m_diff.add_argument("run_b", type=int, help="ejecución posterior")
     m_diff.add_argument("--root", default=".", help="raíz del proyecto (default: .)")
+    m_export = model_sub.add_parser(
+        "export-run", help="exportar el resultado de una ejecución a un archivo nuevo"
+    )
+    m_export.add_argument("run_id", type=int, help="identificador de ejecución")
+    m_export.add_argument("output", help="destino local nuevo (.csv/.xlsx/.ods)")
+    m_export.add_argument("--root", default=".", help="raíz del proyecto (default: .)")
+    m_incremental = model_sub.add_parser(
+        "incremental", help="incorporar un archivo delta a una ejecución anterior"
+    )
+    m_incremental.add_argument("model_id", type=int, help="identificador del modelo")
+    m_incremental.add_argument("previous_run_id", type=int, help="ejecución base")
+    m_incremental.add_argument("file", help="archivo delta local")
+    m_incremental.add_argument("--key", required=True,
+                               help="claves de salida separadas por coma")
+    m_incremental.add_argument("--sheet", default=None, help="hoja a leer en XLSX/ODS")
+    m_incremental.add_argument("--root", default=".", help="raíz del proyecto (default: .)")
     return parser
 
 
@@ -199,11 +258,29 @@ def _model(args) -> int:
     if args.model_command == "join":
         return _model_join(args)
 
+    if args.model_command == "align":
+        return _model_align(args)
+
+    if args.model_command == "validate":
+        return _model_validate(args)
+
+    if args.model_command == "dedupe":
+        return _model_dedupe(args)
+
+    if args.model_command == "transform":
+        return _model_transform(args)
+
     if args.model_command == "exec":
-        return _model_exec(args, conn)
+        return _model_exec(args, conn, config)
 
     if args.model_command == "diff":
         return _model_diff(args, conn)
+
+    if args.model_command == "export-run":
+        return _model_export_run(args, conn, config)
+
+    if args.model_command == "incremental":
+        return _model_incremental(args, conn, config)
 
     # `new`: infiere una entidad desde el archivo y la guarda.
     try:
@@ -302,6 +379,7 @@ def _model_join(args) -> int:
     report = {
         "ok": True,
         "type": args.type,
+        "diagnostics": joins.diagnose(left, right, join),
         "columns": result.columns,
         "rows_in": {"izquierda": len(left.rows), "derecha": len(right.rows)},
         "rows_out": len(result.rows),
@@ -311,7 +389,169 @@ def _model_join(args) -> int:
     return 0
 
 
-def _model_exec(args, conn) -> int:
+def _model_align(args) -> int:
+    """Alinea y concatena fuentes de esquema distinto (ADR-021, T-024)."""
+    from motor.model import engine
+    from motor.sources import EmptySheet, SheetNotFound, read_any
+    from motor.sources.detect import UnsupportedFormat
+
+    try:
+        tables = [read_any(Path(path), sheet=args.sheet) for path in args.files]
+        maps = [{} for _ in tables]
+        if args.column_maps:
+            loaded = json.loads(Path(args.column_maps).read_text(encoding="utf-8"))
+            if not isinstance(loaded, list) or len(loaded) != len(tables):
+                raise ValueError("column-maps debe contener un objeto por archivo")
+            if any(not isinstance(item, dict) for item in loaded):
+                raise ValueError("cada mapa debe ser un objeto JSON")
+            maps = loaded
+        columns = args.columns.split(",") if args.columns else None
+        result, report = engine.align_tables(tables, column_maps=maps, columns=columns)
+    except (UnsupportedFormat, SheetNotFound, EmptySheet, OSError, json.JSONDecodeError,
+            ValueError, engine.EngineError) as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        return 1
+    report.update({
+        "ok": True,
+        "files": [Path(path).name for path in args.files],
+        "sample": result.rows[:5],
+    })
+    if args.output:
+        from motor.model.exports import ExportError, export_table
+
+        try:
+            report["output_file"] = str(export_table(result, Path(args.output)))
+        except ExportError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            return 1
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _model_validate(args) -> int:
+    """Valida filas contra un contrato JSON sin persistir datos (T-025)."""
+    from motor.model import quality
+    from motor.sources import EmptySheet, SheetNotFound, read_any
+    from motor.sources.detect import UnsupportedFormat
+
+    try:
+        table = read_any(Path(args.file), sheet=args.sheet)
+        rules = json.loads(Path(args.rules).read_text(encoding="utf-8"))
+        if not isinstance(rules, list):
+            raise ValueError("el contrato JSON debe ser una lista de reglas")
+        report = quality.validate(table, rules)
+    except (UnsupportedFormat, SheetNotFound, EmptySheet, OSError, json.JSONDecodeError,
+            ValueError, quality.QualityError) as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        return 1
+    report.update({"ok": True, "file": Path(args.file).name})
+    if args.errors_output:
+        from motor.model.exports import ExportError, export_table
+        from motor.sources.tables import Table
+
+        error_table = Table(
+            columns=["row", "rule", "type", "columns", "message"],
+            rows=[
+                [failure["row"], issue["rule"], issue["type"],
+                 ", ".join(issue["columns"]), issue["message"]]
+                for failure in report["failures"] for issue in failure["issues"]
+            ],
+        )
+        try:
+            report["errors_file"] = str(export_table(error_table, Path(args.errors_output)))
+        except ExportError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            return 1
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _model_dedupe(args) -> int:
+    """Previsualiza deduplicación estable por clave explícita (T-027)."""
+    from motor.model import engine
+    from motor.sources import EmptySheet, SheetNotFound, read_any
+    from motor.sources.detect import UnsupportedFormat
+
+    try:
+        table = read_any(Path(args.file), sheet=args.sheet)
+        result, report = engine.deduplicate(
+            table, keys=[key.strip() for key in args.key.split(",") if key.strip()],
+            keep=args.keep,
+        )
+    except (UnsupportedFormat, SheetNotFound, EmptySheet, engine.EngineError) as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        return 1
+    report.update({"ok": True, "file": Path(args.file).name, "columns": result.columns,
+                   "sample": result.rows[:5]})
+    if args.output:
+        from motor.model.exports import ExportError, export_table
+
+        try:
+            report["output_file"] = str(export_table(result, Path(args.output)))
+        except ExportError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            return 1
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _model_transform(args) -> int:
+    """Aplica una operación segura declarada y exporta una tabla local."""
+    from motor.model import exports, transforms
+    from motor.sources import EmptySheet, SheetNotFound, read_any
+    from motor.sources.detect import UnsupportedFormat
+
+    try:
+        table = read_any(Path(args.file), sheet=args.sheet)
+        spec = json.loads(Path(args.spec).read_text(encoding="utf-8"))
+        if not isinstance(spec, dict):
+            raise ValueError("la especificación debe ser un objeto JSON")
+        operation = spec.get("operation")
+        if operation == "derive":
+            result = transforms.derive_column(
+                table, name=spec.get("name"), expression=spec.get("expression"),
+            )
+            details = {"operation": operation, "column": spec.get("name")}
+        elif operation == "aggregate":
+            result = transforms.aggregate_table(
+                table, by=spec.get("by", []), metrics=spec.get("metrics", []),
+            )
+            details = {"operation": operation, "group_by": spec.get("by", []),
+                       "metrics": len(spec.get("metrics", []))}
+        elif operation == "pivot":
+            result = transforms.pivot_table(
+                table, index=spec.get("index", []), pivot=spec.get("pivot"),
+                value=spec.get("value"), function=spec.get("function", "sum"),
+            )
+            details = {"operation": operation, "index": spec.get("index", [])}
+        elif operation == "unpivot":
+            result = transforms.unpivot_table(
+                table, index=spec.get("index", []), columns=spec.get("columns", []),
+                name_column=spec.get("name_column", "variable"),
+                value_column=spec.get("value_column", "value"),
+            )
+            details = {"operation": operation, "columns": spec.get("columns", [])}
+        elif operation == "normalize":
+            result, details = transforms.normalize_table(
+                table, numbers=spec.get("numbers", {}), dates=spec.get("dates", {}),
+            )
+            details["operation"] = operation
+        else:
+            raise ValueError("operation debe ser derive, aggregate, pivot, unpivot o normalize")
+        output_path = exports.export_table(result, Path(args.output))
+    except (UnsupportedFormat, SheetNotFound, EmptySheet, OSError, json.JSONDecodeError,
+            ValueError, transforms.TransformError, exports.ExportError) as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        return 1
+    print(json.dumps({
+        "ok": True, **details, "rows_in": len(table.rows), "rows_out": len(result.rows),
+        "columns": result.columns, "output_file": str(output_path),
+        "sample": result.rows[:5],
+    }, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _model_exec(args, conn, config) -> int:
     """Ejecuta el modelo (reglas) y guarda la huella del resultado (M5)."""
     from motor.model import rules, run, store
     from motor.sources import EmptySheet, SheetNotFound, read_any
@@ -347,12 +587,29 @@ def _model_exec(args, conn) -> int:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
         return 1
 
-    run_id = run.record(
-        conn, args.model_id, table=result, output=entity.name,
-        lineage=run.describe_lineage(
-            output=entity.name, rules_applied=plan, table=result
-        ),
+    try:
+        source_hash = _file_sha256(Path(args.file))
+    except OSError as exc:
+        print(json.dumps({"ok": False, "error": f"no se pudo leer la fuente: {exc}"},
+                         ensure_ascii=False))
+        return 1
+    source_metadata = [{"name": Path(args.file).name, "sha256": source_hash}]
+    lineage = run.describe_lineage(
+        output=entity.name, rules_applied=plan, table=result,
+        model_version=model.version, sources=source_metadata,
+        parameters={"operation": "full"},
     )
+    try:
+        run_id = run.record(
+            conn, args.model_id, table=result, output=entity.name,
+            artifact_dir=config.paths.model_outputs,
+            source_name=Path(args.file).name, source_sha256=source_hash,
+            lineage=lineage,
+        )
+    except (OSError, ValueError) as exc:
+        print(json.dumps({"ok": False, "error": f"no se pudo guardar la ejecución: {exc}"},
+                         ensure_ascii=False))
+        return 1
     fp = run.fingerprint(result)
     print(json.dumps({
         "ok": True, "run_id": run_id, "model_id": args.model_id,
@@ -360,6 +617,90 @@ def _model_exec(args, conn) -> int:
         "rows_out": len(result.rows), "hash": fp.hash[:16],
     }, ensure_ascii=False, indent=2))
     return 0
+
+
+def _model_incremental(args, conn, config) -> int:
+    """Aplica solo el archivo delta y sustituye claves previas de forma estable."""
+    from motor.model import engine, rules, run, store
+    from motor.sources import EmptySheet, SheetNotFound, read_any
+    from motor.sources.detect import UnsupportedFormat
+
+    try:
+        model = store.get(conn, args.model_id)
+        previous = run.get(conn, args.previous_run_id)
+    except (store.ModelNotFound, run.RunNotFound) as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        return 1
+    if previous.model_id != args.model_id:
+        print(json.dumps({"ok": False, "error": "la ejecución base pertenece a otro modelo"},
+                         ensure_ascii=False))
+        return 1
+    prior_model_version = (previous.lineage or {}).get("model_version")
+    if prior_model_version != model.version:
+        print(json.dumps({"ok": False,
+                          "error": "la ejecución base usa otra versión del modelo"},
+                         ensure_ascii=False))
+        return 1
+    if not previous.artifact_path or Path(previous.artifact_path).name != previous.artifact_path:
+        print(json.dumps({"ok": False, "error": "la ejecución base no tiene artefacto"},
+                         ensure_ascii=False))
+        return 1
+    previous_path = config.paths.model_outputs / previous.artifact_path
+    if not previous_path.is_file():
+        print(json.dumps({"ok": False, "error": "no se encuentra el artefacto base"},
+                         ensure_ascii=False))
+        return 1
+    if not model.entities:
+        print(json.dumps({"ok": False, "error": "el modelo no tiene entidades"},
+                         ensure_ascii=False))
+        return 1
+    try:
+        prior_table = run.read_artifact(previous_path)
+        source_table = read_any(Path(args.file), sheet=args.sheet)
+        plan = rules.list_for(conn, args.model_id)
+        entity = model.entities[0]
+        delta = run.execute(
+            {entity.name: source_table}, rules_by_source={entity.name: plan},
+            join_plan=[], output=entity.name,
+        )
+        keys = [key.strip() for key in args.key.split(",") if key.strip()]
+        combined, _ = engine.align_tables([prior_table, delta])
+        result, dedupe_report = engine.deduplicate(combined, keys=keys, keep="last")
+    except (UnsupportedFormat, SheetNotFound, EmptySheet, engine.EngineError,
+            run.RunError) as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        return 1
+
+    source_hash = _file_sha256(Path(args.file))
+    source_metadata = [{"name": previous.source_name,
+                        "sha256": previous.source_sha256,
+                        "run_id": previous.run_id},
+                       {"name": Path(args.file).name, "sha256": source_hash}]
+    lineage = run.describe_lineage(
+        output=previous.output, rules_applied=plan, table=result,
+        model_version=model.version, sources=source_metadata,
+        parameters={"operation": "incremental", "keys": keys,
+                    "previous_run_id": previous.run_id,
+                    "keep": "last"},
+    )
+    run_id = run.record(
+        conn, args.model_id, table=result, output=previous.output,
+        artifact_dir=config.paths.model_outputs,
+        source_name=Path(args.file).name, source_sha256=source_hash,
+        lineage=lineage,
+    )
+    print(json.dumps({
+        "ok": True, "run_id": run_id, "previous_run_id": previous.run_id,
+        "rows_in_delta": len(source_table.rows), "rows_out": len(result.rows),
+        "duplicates_replaced_or_removed": dedupe_report["duplicates_removed"],
+        "columns": result.columns,
+    }, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _file_sha256(path: Path) -> str:
+    with Path(path).open("rb") as handle:
+        return hashlib.file_digest(handle, "sha256").hexdigest()
 
 
 def _model_diff(args, conn) -> int:
@@ -383,6 +724,42 @@ def _model_diff(args, conn) -> int:
         "rows_a": before.fingerprint.rows,
         "rows_b": after.fingerprint.rows,
     }, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _model_export_run(args, conn, config) -> int:
+    """Exporta el Parquet inmutable de una ejecución a un archivo local nuevo."""
+    from motor.model import exports, run
+    from motor.sources.tables import Table
+
+    try:
+        record = run.get(conn, args.run_id)
+    except run.RunNotFound as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        return 1
+    if not record.artifact_path or Path(record.artifact_path).name != record.artifact_path:
+        print(json.dumps({"ok": False, "error": "la ejecución no tiene artefacto"},
+                         ensure_ascii=False))
+        return 1
+    artifact = config.paths.model_outputs / record.artifact_path
+    if not artifact.is_file():
+        print(json.dumps({"ok": False, "error": "no se encuentra el artefacto"},
+                         ensure_ascii=False))
+        return 1
+    try:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        arrow_table = pq.read_table(artifact)
+        columns = list(arrow_table.column_names)
+        rows = [[row.get(column) for column in columns] for row in arrow_table.to_pylist()]
+        output_path = exports.export_table(Table(columns=columns, rows=rows), Path(args.output))
+    except (OSError, ValueError, pa.ArrowException, exports.ExportError) as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        return 1
+    print(json.dumps({"ok": True, "run_id": args.run_id,
+                      "rows": len(rows), "columns": columns,
+                      "output_file": str(output_path)}, ensure_ascii=False, indent=2))
     return 0
 
 

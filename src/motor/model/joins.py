@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections import Counter
 from dataclasses import dataclass, field
+
+from motor.sources.tables import Table
 
 JOIN_TYPES = ("inner", "left", "anti")
 
@@ -98,6 +101,68 @@ def orphan_condition(join: dict) -> str:
     first = pairs[0]
     right_ref = join.get("right_ref") or join.get("right")
     return f"{_ident(right_ref)}.{_ident(first['right'])} IS NULL"
+
+
+def diagnose(left: Table, right: Table, join: Join) -> dict:
+    """Mide cobertura y cardinalidad de un cruce sin materializar el resultado."""
+    if not join.on:
+        raise UnknownJoinType("un cruce necesita al menos una columna en `on`")
+    left_indexes = []
+    right_indexes = []
+    for pair in join.on:
+        left_name, right_name = pair.get("left"), pair.get("right")
+        if left_name not in left.columns:
+            raise UnknownJoinType(f"columna izquierda desconocida: {left_name!r}")
+        if right_name not in right.columns:
+            raise UnknownJoinType(f"columna derecha desconocida: {right_name!r}")
+        left_indexes.append(left.columns.index(left_name))
+        right_indexes.append(right.columns.index(right_name))
+
+    def counts(table: Table, indexes: list[int]) -> Counter:
+        result: Counter = Counter()
+        for row in table.rows:
+            key = tuple(row[index] if index < len(row) else None for index in indexes)
+            if all(value is not None and value != "" for value in key):
+                result[key] += 1
+        return result
+
+    left_counts = counts(left, left_indexes)
+    right_counts = counts(right, right_indexes)
+    matched_left = sum(count for key, count in left_counts.items() if key in right_counts)
+    matched_right = sum(count for key, count in right_counts.items() if key in left_counts)
+    left_duplicate_rows = sum(count - 1 for count in left_counts.values() if count > 1)
+    right_duplicate_rows = sum(count - 1 for count in right_counts.values() if count > 1)
+    left_duplicate_keys = sum(1 for count in left_counts.values() if count > 1)
+    right_duplicate_keys = sum(1 for count in right_counts.values() if count > 1)
+    if left_duplicate_keys and right_duplicate_keys:
+        cardinality = "many_to_many"
+    elif left_duplicate_keys:
+        cardinality = "many_to_one"
+    elif right_duplicate_keys:
+        cardinality = "one_to_many"
+    else:
+        cardinality = "one_to_one"
+    return {
+        "cardinality": cardinality,
+        "left_rows": len(left.rows),
+        "right_rows": len(right.rows),
+        "left_distinct_keys": len(left_counts),
+        "right_distinct_keys": len(right_counts),
+        "left_duplicate_keys": left_duplicate_keys,
+        "right_duplicate_keys": right_duplicate_keys,
+        "left_duplicate_rows": left_duplicate_rows,
+        "right_duplicate_rows": right_duplicate_rows,
+        "left_matched_rows": matched_left,
+        "left_unmatched_rows": len(left.rows) - matched_left,
+        "right_matched_rows": matched_right,
+        "right_unmatched_rows": len(right.rows) - matched_right,
+        "left_match_rate": matched_left / len(left.rows) if left.rows else 0.0,
+        "right_match_rate": matched_right / len(right.rows) if right.rows else 0.0,
+        "null_key_rows": {
+            "left": len(left.rows) - sum(left_counts.values()),
+            "right": len(right.rows) - sum(right_counts.values()),
+        },
+    }
 
 
 # -- persistencia ------------------------------------------------------------

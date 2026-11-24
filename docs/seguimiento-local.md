@@ -29,8 +29,18 @@ un contrato cerrado.
 | T-019 | **Cumplida** | **M5 — Repetir**: automatización y diff de versiones | `yachay model exec` guarda la huella (columnas+filas+sha256, sin datos) y `model diff` dice qué cambió; probado 96→68 con la bitácora real |
 | T-020 | **Cumplida** | **M6 — UI de modelado y resultados** | Siete vistas: Cargar archivo, Modelo, Ejecutar, Resultados (+ estado, cola y catálogo). Endpoints `models`, `profile`, `runs`, `diff`, `orphans`. Flujo completo verificado: perfil → modelo → ejecución → diff |
 | T-021 | **Cumplida** | Robustez ante entrada no confiable (auditoría de backend F-01/F-02/F-03) | El worker falla el job en vez de caer ante contenido no confiable; los lectores traducen errores de parseo a `UnsupportedFormat` (400, no 500); el retry no resucita un job terminal; 7 pruebas de regresión, 412 pruebas y 100% de cobertura |
-| T-022 | Pendiente — prioridad | Ampliar funciones nativas sobre archivos locales | Evaluar e implementar incrementalmente lectura local de presentaciones `.pptx`, exportación de resultados a archivos nuevos `.xlsx`/`.ods` y resúmenes locales de ejecuciones/diffs; procesamiento de datos local, sin integración con Workspace |
+| T-022 | En curso — prioridad | Ampliar funciones nativas del motor local (ADR-021) | Completar T-024–T-033 por entregas; fuentes y resultados locales, sin Workspace/MCP; DeepInfra se mantiene como dependencia remota solo para asistencia IA |
 | T-023 | Pendiente — posterior a T-022 | Ampliar la asistencia de DeepInfra con interacción conversacional | Permitir describir necesidades en lenguaje natural y recibir propuestas dentro de las capacidades del motor; mantener vista previa y aceptación humana, sin ejecutar ni aplicar cambios automáticamente. Requiere conexión a DeepInfra |
+| T-024 | Implementación añadida; validación pendiente | Alinear esquemas entre fuentes | CLI `model align`; mapeo explícito, unión estable, reporte de columnas ausentes y exportación opcional; append estricto conservado |
+| T-025 | Implementación añadida; validación pendiente | Validaciones de calidad por fila | CLI `model validate`; reglas required/unique/range/format y salida de fila/campo/motivo, sin valores en SQLite |
+| T-026 | Implementación añadida; validación pendiente | Diagnóstico de cruces | CLI `model join` incluye claves duplicadas, tasas por filas coincidentes/no coincidentes y filas sin clave |
+| T-027 | Implementación añadida; validación pendiente | Deduplicación determinista | CLI `model dedupe`; claves explícitas, first/last, orden preservado y claves ausentes preservadas como filas independientes |
+| T-028 | Implementación añadida; validación pendiente | Columnas derivadas seguras | `model transform` admite expresiones declarativas acotadas; sin SQL libre ni ejecución de código |
+| T-029 | Implementación añadida; validación pendiente | Agregaciones y pivoteo | `model transform` admite count/sum/avg/min/max, pivot y unpivot con límites |
+| T-030 | Implementación añadida; validación pendiente | Exportación tabular local | Crear archivos nuevos CSV/XLSX/ODS para resultados y errores; `model export-run` exporta Parquet guardado |
+| T-031 | Implementación añadida; validación pendiente | Formatos de fecha y número por fuente | `model transform` normaliza solo columnas y formatos declarados; informa errores sin adivinar |
+| T-032 | Implementación añadida; validación pendiente | Ejecución incremental | CLI `model incremental` transforma un delta, alinea columnas, reemplaza por clave y exige misma versión del modelo |
+| T-033 | Implementación añadida; validación pendiente | Metadatos de reproducibilidad | Ejecuciones nuevas registran versión de modelo/motor, fuentes y SHA-256, parámetros y huella; sin linaje empresarial |
 
 ## Decisiones
 

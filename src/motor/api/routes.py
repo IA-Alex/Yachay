@@ -579,9 +579,11 @@ def _run_create(ctx: ApiContext, request: Request) -> tuple[int, dict]:
             ).hexdigest()
             stored_source_name = json.dumps(sources, ensure_ascii=False)
         lineage = run.describe_lineage(
-            output=entity.name, rules_applied=plan, table=result
+            output=entity.name, rules_applied=plan, table=result,
+            model_version=model.version,
+            sources=source_hashes,
+            parameters={"operation": "append" if len(sources) > 1 else "full"},
         )
-        lineage["sources"] = source_hashes
         if len(sources) > 1:
             lineage["operation"] = "append"
         run_id = run.record(

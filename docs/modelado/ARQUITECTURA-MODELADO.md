@@ -183,7 +183,7 @@ contrato. El patrón de trabajo es el ya establecido.
 | Varias hojas con esquemas distintos | Join imposible | La entidad puede fallar; se reporta |
 | Reglas incompletas | Resultado parcial | Perfilado (C7) muestra qué quedó sin cubrir |
 | `openpyxl` con `.ods` | No lee ODS | Declarar; evaluar `odfpy` solo si hace falta |
-| Alcance se desborda a Niveles 4-5 | Proyecto sin final | El alcance está **cerrado**: 13 capacidades |
+| Alcance se desborda a Niveles 4-5 | Proyecto sin final | El baseline M1–M6 es de 13 capacidades; las ampliaciones aprobadas se enumeran en ADR-021 y el tracker |
 
 ## 10. Documentos relacionados
 
@@ -191,3 +191,13 @@ contrato. El patrón de trabajo es el ya establecido.
 - Este documento y los ADRs del repositorio son la referencia arquitectónica
   mantenida; ya no existe un generador CrewAI dentro del producto.
 - `docs/seguimiento-local.md` — tracker (T-015 en adelante).
+
+## 11. Ampliación nativa local (ADR-021)
+
+El baseline de 13 capacidades permanece como referencia de M1–M6. ADR-021
+aprueba una ampliación por etapas para alinear esquemas, validar por fila,
+diagnosticar cruces, deduplicar, derivar/agrupar/pivotear columnas, normalizar
+formatos y exportar resultados tabulares locales. El estado y validación de cada
+acción se reflejan en `docs/seguimiento-local.md`; el uso y los límites están en
+`docs/modelado/ACCIONES-NATIVAS.md`. No se incorpora Workspace/MCP, SQL libre ni
+ejecución de código.

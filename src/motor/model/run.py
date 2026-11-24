@@ -63,6 +63,9 @@ def describe_lineage(
     output: str,
     rules_applied: Sequence[Rule] = (),
     table: Table | None = None,
+    model_version: int | None = None,
+    sources: list[dict] | None = None,
+    parameters: dict | None = None,
 ) -> dict:
     """Describe qué se aplicó al resultado, para `runs.lineage` (H-05).
 
@@ -85,6 +88,15 @@ def describe_lineage(
             for rule in rules_applied
         ],
     }
+    from motor import __version__
+
+    payload["engine_version"] = __version__
+    if model_version is not None:
+        payload["model_version"] = model_version
+    if sources is not None:
+        payload["sources"] = sources
+    if parameters is not None:
+        payload["parameters"] = parameters
     if table is not None:
         # Un solo recorrido de filas: no duplicamos memoria en tablas grandes.
         types: dict[str, set[str]] = {column: set() for column in table.columns}
@@ -279,6 +291,16 @@ def _write_parquet(table: Table, path: Path) -> None:
                 type=pa.string(),
             )
     pq.write_table(pa.table(columns), path, compression="zstd")
+
+
+def read_artifact(path: Path) -> Table:
+    """Lee una salida Parquet de modelado como tabla del motor."""
+    import pyarrow.parquet as pq
+
+    arrow = pq.read_table(Path(path))
+    columns = list(arrow.column_names)
+    rows = [[record.get(column) for column in columns] for record in arrow.to_pylist()]
+    return Table(columns=columns, rows=rows)
 
 
 def get(conn: sqlite3.Connection, run_id: int) -> RunRecord:

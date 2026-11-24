@@ -8,8 +8,9 @@ local.
 
 ## Estado
 
-**Implementado y verificado** (535 pruebas, 0 omitidas, 100% de cobertura sobre
-`src/` — gate con `fail_under=100` —, ejecutable con `./scripts/test.sh`):
+**Baseline implementado y verificado antes de la ampliación ADR-021** (535
+pruebas, 0 omitidas, 100% de cobertura sobre `src/` — gate con
+`fail_under=100` —, ejecutable con `./scripts/test.sh`):
 
 - Ingesta local: scanner, admisión de disco, cola con 9 estados, lease atómico.
 - Pipeline CSV → **DuckDB** → **Parquet** versionado con `manifest.json`.
@@ -26,9 +27,11 @@ local.
 
 El reencuadre a **motor de modelado** (ADR-019) está entregado en M1–M6:
 perfilado, modelo con entidades y claves, reglas de transformación, cruces,
-ejecuciones versionadas, diff y vistas de modelo/resultados. La arquitectura
-mantiene 13 capacidades de alcance: 11 funciones de modelado y 2 capacidades
-operativas de ingesta/publicación.
+ejecuciones versionadas, diff y vistas de modelo/resultados. ADR-021 amplía ese
+baseline con funciones nativas locales de alineación de esquemas, calidad,
+transformación y exportación, por etapas. El tracker distingue las capacidades
+entregadas de las pendientes. La implementación de esas acciones ya está en la
+CLI; queda pendiente su validación funcional.
 
 La asistencia usa DeepInfra opcional (`DEEPINFRA_API_KEY`) y solo envía la instrucción,
 nombres de columna y estadísticas del perfil; nunca filas. El informe visual se genera
@@ -45,6 +48,8 @@ normalización formal, modelo dimensional, linaje y gobernanza.
 | `docs/modelado/ARQUITECTURA-MODELADO.md` | Arquitectura del motor de modelado (13 capacidades, stack, plan) |
 | `docs/modelado/DIAGRAMAS-ARQUITECTURA.md` | Diagramas (componentes, secuencia, ERD, estados, dependencias) |
 | `docs/adr/ADR-014…020.md` | Decisiones: leases, `attempt`, API, GC, modelado, propuestas y reportes |
+| `docs/adr/ADR-021-ampliacion-motor-local.md` | Alcance aprobado para ampliar las funciones nativas locales |
+| `docs/modelado/ACCIONES-NATIVAS.md` | Uso, formatos y límites de las nuevas acciones locales |
 | `docs/seguimiento-local.md` | Tracker de tareas y decisiones |
 | `docs/mantenimiento-dependencias.md` | Fuente de verdad y proceso de actualización de dependencias y documentación |
 | `docs/api/REVISION-API-V1.md` | Revisión del contrato de la API v1 |
@@ -78,6 +83,18 @@ uv sync --frozen
 
 # Ejecutar y persistir la ejecución (M5: huella, Parquet e informe)
 .venv/bin/python -m motor model exec 1 hoja.csv
+
+# Alinear esquemas distintos y exportar un archivo nuevo
+.venv/bin/python -m motor model align enero.csv febrero.csv --output combinado.xlsx
+
+# Validar filas con un contrato JSON local
+.venv/bin/python -m motor model validate datos.csv calidad.json
+
+# Transformar y exportar localmente
+.venv/bin/python -m motor model transform datos.csv operacion.json --output salida.ods
+
+# Incorporar un archivo delta a una ejecución anterior
+.venv/bin/python -m motor model incremental 1 17 delta.csv --key id
 
 # Worker: procesa la bandeja de entrada
 .venv/bin/python -m motor run --root .
