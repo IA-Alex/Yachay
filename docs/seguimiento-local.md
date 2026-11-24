@@ -29,6 +29,8 @@ un contrato cerrado.
 | T-019 | **Cumplida** | **M5 — Repetir**: automatización y diff de versiones | `yachay model exec` guarda la huella (columnas+filas+sha256, sin datos) y `model diff` dice qué cambió; probado 96→68 con la bitácora real |
 | T-020 | **Cumplida** | **M6 — UI de modelado y resultados** | Siete vistas: Cargar archivo, Modelo, Ejecutar, Resultados (+ estado, cola y catálogo). Endpoints `models`, `profile`, `runs`, `diff`, `orphans`. Flujo completo verificado: perfil → modelo → ejecución → diff |
 | T-021 | **Cumplida** | Robustez ante entrada no confiable (auditoría de backend F-01/F-02/F-03) | El worker falla el job en vez de caer ante contenido no confiable; los lectores traducen errores de parseo a `UnsupportedFormat` (400, no 500); el retry no resucita un job terminal; 7 pruebas de regresión, 412 pruebas y 100% de cobertura |
+| T-022 | Pendiente — prioridad | Ampliar funciones nativas sobre archivos locales | Evaluar e implementar incrementalmente lectura local de presentaciones `.pptx`, exportación de resultados a archivos nuevos `.xlsx`/`.ods` y resúmenes locales de ejecuciones/diffs; procesamiento de datos local, sin integración con Workspace |
+| T-023 | Pendiente — posterior a T-022 | Ampliar la asistencia de DeepInfra con interacción conversacional | Permitir describir necesidades en lenguaje natural y recibir propuestas dentro de las capacidades del motor; mantener vista previa y aceptación humana, sin ejecutar ni aplicar cambios automáticamente. Requiere conexión a DeepInfra |
 
 ## Decisiones
 
