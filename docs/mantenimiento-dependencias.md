@@ -29,8 +29,9 @@ genera un HTML autónomo con SVG y tabla accesible; no incorpora bibliotecas de
 gráficos, CDN ni servicios de dashboard. Regenerar y borrar informes requiere
 confirmación en escritorio; borrar el HTML no elimina el Parquet.
 
-La vista **Propuestas** es opcional y usa DeepInfra por HTTPS. Requiere
-`DEEPINFRA_API_KEY` en el entorno del proceso del motor. Solo envía instrucción,
+La vista **Propuestas** usa DeepInfra por HTTPS desde `motor-deepinfra`. Requiere
+el token en `~/.config/yachay/deepinfra-api-key` (modo 600); systemd lo expone
+como credencial efímera únicamente al adaptador. Solo envía instrucción,
 nombres de columnas y estadísticas de perfil, nunca filas. El proveedor puede
 cobrar por uso; el panel visual local funciona sin credenciales.
 

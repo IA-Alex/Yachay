@@ -11,6 +11,7 @@ Type=exec
 WorkingDirectory=%h/Yachay
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=%h/Yachay/src
+UnsetEnvironment=DEEPINFRA_API_KEY
 ExecStart=%h/Yachay/.venv/bin/python -m motor run --root %h/Yachay
 
 # Reinicio ante fallo del proceso (OOM, excepción no controlada). El lease y la

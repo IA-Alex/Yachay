@@ -33,10 +33,10 @@ transformación y exportación, por etapas. El tracker distingue las capacidades
 entregadas de las pendientes. La implementación de esas acciones ya está en la
 CLI; queda pendiente su validación funcional.
 
-La asistencia usa DeepInfra opcional (`DEEPINFRA_API_KEY`) y solo envía la instrucción,
-nombres de columna y estadísticas del perfil; nunca filas. El informe visual se genera
-localmente y no requiere proveedor ni dependencia de gráficos. El uso del proveedor de IA
-puede tener costo según sus tarifas.
+La asistencia usa DeepInfra desde un adaptador aislado y solo envía instrucción,
+nombres de columna y estadísticas del perfil; nunca filas. La API local no recibe
+la credencial ni tiene red IP. El informe visual se genera localmente sin proveedor ni
+dependencia de gráficos. El uso de IA puede tener costo según las tarifas vigentes.
 
 **Fuera de alcance:** gateway LLM general, generación arbitraria de código o funciones,
 normalización formal, modelo dimensional, linaje y gobernanza.

@@ -1,6 +1,7 @@
 # ADR-020: propuestas de modelado y visualización local
 
 - Estado: aceptada e implementada.
+- Frontera de red y secreto del proveedor: ver ADR-022.
 - Contexto: herramienta de escritorio personal; se quiere crear visualizaciones sin
   costo de infraestructura y facilitar transformaciones sin ampliar el motor con
   funciones generadas dinámicamente.

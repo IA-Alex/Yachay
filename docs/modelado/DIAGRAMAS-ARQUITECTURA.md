@@ -48,6 +48,7 @@ flowchart TB
     subgraph fuera["Fuera de la app"]
         Hojas["Hojas Excel / CSV / ODS<br/>y documentos .docx / .pdf / .txt"]
         Operador(["Operador<br/>(un solo usuario, su equipo)"])
+        Provider["DeepInfra<br/>HTTPS fijo"]
     end
 
     subgraph app["App de escritorio Yachay (misma máquina)"]
@@ -62,6 +63,7 @@ flowchart TB
             CLI["__main__.py<br/>CLI alternativa: run · api · inspect · model"]
             Worker["worker.py<br/>ciclo scan→admit→claim→run→publish→commit"]
             API["api/<br/>server socket AF_UNIX + routes + envelope"]
+            Gateway["deepinfra_gateway.py<br/>socket AF_UNIX + salida HTTPS acotada"]
 
             subgraph ing["ingestion/"]
                 Scanner["scanner · admission · identity"]
@@ -103,6 +105,8 @@ flowchart TB
     Operador -->|abre y usa| Desktop
     Operador -->|CLI sin ventana| CLI
     Desktop -->|HTTP sobre socket AF_UNIX 0660<br/>misma máquina, sin red| API
+    API -->|AF_UNIX<br/>solo instrucción + perfil de columnas| Gateway
+    Gateway -->|HTTPS TLS<br/>sin redirecciones; host fijo| Provider
     CLI --> Worker
     CLI --> API
     CLI --> Contrato
@@ -141,13 +145,17 @@ flowchart TB
     API --> FS
 ```
 
-**Lectura.** Es **una app de escritorio local**, no un servicio web:
+**Lectura.** Es **una app de escritorio local**, no un servicio web; la única
+excepción de salida a Internet es el adaptador aislado para asistencia:
 
 - **La ventana manda.** `yachay_desktop` (tkinter/ttk) es la interfaz que usa el
   operador a diario. El `worker` y la `api` corren en la misma máquina; la
   ventana se comunica con ellos por el socket Unix `data/motor.sock` (modo
-  `0660`). No hay TCP ni red; `YACHAY_API_TOKEN` añade autenticación Bearer cuando se configura: es tubería entre
-  procesos del mismo equipo (ADR-016).
+  `0660`). API y worker no tienen red IP; `YACHAY_API_TOKEN` añade autenticación
+  Bearer cuando se configura (ADR-016).
+- **La asistencia sale por una frontera aparte.** `motor-deepinfra` no acepta
+  TCP, recibe solo propuestas por AF_UNIX, no puede leer `data/` y conecta por
+  TLS al host fijo de DeepInfra. El API no posee la clave ni acceso de red.
 - **Dos planos internos del motor**, separados por una frontera real:
   - El **plano de ingesta** (`worker.py` + `ingestion/` + `pipelines/` +
     `publishing/`) mueve bytes del disco a Parquet. No conoce el "modelo del

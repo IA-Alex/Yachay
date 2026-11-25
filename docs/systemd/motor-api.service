@@ -3,13 +3,16 @@ Description=Yachay — API v1 sobre socket Unix
 Documentation=file:///home/panda/Yachay/docs/systemd/README.md
 # La API es un cliente de solo lectura más tres mutaciones acotadas (ADR-016).
 # Puede arrancar con o sin el worker: solo depende de la base de estado.
-After=default.target
+After=default.target motor-deepinfra.service
+Wants=motor-deepinfra.service
 
 [Service]
 Type=exec
 WorkingDirectory=%h/Yachay
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=%h/Yachay/src
+Environment=YACHAY_DEEPINFRA_SOCKET=%t/motor-deepinfra/deepinfra.sock
+UnsetEnvironment=DEEPINFRA_API_KEY
 # Directorio de runtime gestionado por systemd: el socket vive aquí y systemd
 # limpia el directorio al parar la unidad.
 RuntimeDirectory=motor

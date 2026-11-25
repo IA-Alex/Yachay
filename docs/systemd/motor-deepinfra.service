@@ -1,0 +1,49 @@
+[Unit]
+Description=Yachay — adaptador aislado de propuestas DeepInfra
+Documentation=file:///home/panda/Yachay/docs/systemd/README.md
+After=default.target
+
+[Service]
+Type=exec
+WorkingDirectory=/
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=%h/Yachay/src
+Environment=YACHAY_DEEPINFRA_SOCKET=%t/motor-deepinfra/deepinfra.sock
+LoadCredential=deepinfra_api_key:%h/.config/yachay/deepinfra-api-key
+RuntimeDirectory=motor-deepinfra
+RuntimeDirectoryMode=0750
+ExecStart=%h/Yachay/.venv/bin/python -m motor deepinfra
+
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+KillMode=mixed
+TimeoutStopSec=20
+
+# Único proceso con salida de red. No escucha por TCP; solo AF_UNIX.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=tmpfs
+BindReadOnlyPaths=%h/Yachay/src %h/Yachay/.venv
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+ReadWritePaths=%t/motor-deepinfra
+UMask=0027
+
+MemoryMax=512M
+CPUQuota=50%
+TasksMax=32
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

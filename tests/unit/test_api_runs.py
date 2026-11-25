@@ -250,7 +250,7 @@ class RunsApiTests(unittest.TestCase):
         )
         self.assertEqual(status, 404)
 
-    def test_assistant_proposal_needs_provider_key_and_does_not_change_model(self):
+    def test_assistant_proposal_needs_local_gateway_and_does_not_change_model(self):
         self._upload("datos.csv", "id,value\n1,PRIVATE_ROW_VALUE\n")
         model_id = self._model()
         payload = json.dumps({"source": "datos.csv", "instruction": "convierte id a número"})
@@ -271,23 +271,9 @@ class RunsApiTests(unittest.TestCase):
             "params": {"to": "number"},
         }]}
 
-        class ProviderResponse:
-            status = 200
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_args):
-                return False
-
-            def read(self, _limit):
-                return json.dumps({"choices": [{"message": {
-                    "content": json.dumps(proposal),
-                }}]}).encode()
-
-        with patch.dict(os.environ, {"DEEPINFRA_API_KEY": "test-secret"}), \
-                patch("motor.assistant.urllib.request.urlopen",
-                      return_value=ProviderResponse()) as opened:
+        with patch.dict(os.environ, {}, clear=True), \
+                patch("motor.assistant.propose_via_gateway",
+                      return_value=proposal) as opened:
             status, response = self.call(
                 "POST", f"/v1/models/{model_id}/assistant/proposals",
                 body=json.dumps({"source": "datos.csv", "instruction": "convierte id"}),
@@ -295,9 +281,10 @@ class RunsApiTests(unittest.TestCase):
             )
         self.assertEqual(status, 200)
         self.assertEqual(response["data"]["proposal"], proposal)
-        sent = opened.call_args.args[0].data.decode()
-        self.assertIn("id", sent)
-        self.assertNotIn("PRIVATE_ROW_VALUE", sent)
+        sent_instruction, sent_schema = opened.call_args.args
+        self.assertEqual(sent_instruction, "convierte id")
+        self.assertIn("id", json.dumps(sent_schema))
+        self.assertNotIn("PRIVATE_ROW_VALUE", json.dumps(sent_schema))
 
     def test_accepting_a_proposal_creates_new_version_without_running_it(self):
         self._upload("datos.csv", "id,value\n1,a\n")

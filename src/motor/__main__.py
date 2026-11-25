@@ -2,6 +2,7 @@
 
 Run the local worker: `yachay run [--root DIR] [--config defaults.toml] [--once]`.
 Run the local API: `yachay api [--root DIR] [--config defaults.toml] [--socket PATH]`.
+Run the isolated DeepInfra adapter: `yachay deepinfra [--socket PATH]`.
 Inspect an input: `yachay inspect ARCHIVO [--sheet HOJA]` (ADR-019, M1).
 """
 
@@ -15,6 +16,7 @@ from pathlib import Path
 
 from motor.api.server import serve
 from motor.config import MotorConfig
+from motor.deepinfra_gateway import serve as serve_deepinfra
 from motor.worker import Worker
 
 # Default socket location, relative to the workspace root (ADR-016).
@@ -44,6 +46,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--socket",
         default=None,
         help="Unix socket path (default: <root>/data/motor.sock)",
+    )
+
+    deepinfra = sub.add_parser(
+        "deepinfra", help="serve the isolated DeepInfra proposal adapter"
+    )
+    deepinfra.add_argument(
+        "--socket", default=None,
+        help="Unix socket path (default: $XDG_RUNTIME_DIR/motor-deepinfra/deepinfra.sock)",
     )
 
     inspect = sub.add_parser(
@@ -186,6 +196,10 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "model":
         return _model(args)
+
+    if args.command == "deepinfra":
+        serve_deepinfra(Path(args.socket) if args.socket else None)
+        return 0
 
     root = Path(args.root)
     if args.config:

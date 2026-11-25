@@ -702,7 +702,7 @@ def _assistant_proposal(ctx: ApiContext, request: Request) -> tuple[int, dict]:
     if not schema:
         raise ApiError(ErrorCode.BAD_REQUEST, "la fuente no contiene columnas del modelo")
     try:
-        proposal = assistant.propose(body["instruction"], schema)
+        proposal = assistant.propose_via_gateway(body["instruction"], schema)
     except assistant.AssistantError as exc:
         raise ApiError(ErrorCode.UNAVAILABLE, str(exc)) from None
     return 200, {"proposal": proposal, "operations": assistant.operations()}

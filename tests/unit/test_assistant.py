@@ -114,51 +114,68 @@ class AssistantProviderTests(unittest.TestCase):
     def _response(self, content):
         return json.dumps({"choices": [{"message": {"content": json.dumps(content)}}]}).encode()
 
+    class Connection:
+        def __init__(self, _host, **_kwargs):
+            self.status = 200
+            self.payload = b"{}"
+
+        def request(self, _method, _path, body, **_kwargs):
+            self.body = body
+
+        def getresponse(self):
+            return AssistantProviderTests.Response(self.payload)
+
+        def close(self):
+            pass
+
     def test_provider_receives_schema_but_no_source_rows(self):
         content = {"summary": "Convertir amount", "rules": [
             {"name": "amount_number", "type": "cast", "column": "amount",
              "params": {"to": "number"}},
         ]}
+        connection = self.Connection("api.deepinfra.com")
+        connection.payload = self._response(content)
         with patch.dict(os.environ, {"DEEPINFRA_API_KEY": "test-secret"}), \
-                patch("motor.assistant.urllib.request.urlopen",
-                      return_value=self.Response(self._response(content))) as opened:
+                patch("motor.assistant._PinnedHTTPSConnection", return_value=connection):
             result = assistant.propose("convierte amount a número", [
                 {"name": "amount", "inferred_type": "text", "rows": 12},
             ])
-        sent = json.loads(opened.call_args.args[0].data)
+        sent = json.loads(connection.body)
         self.assertEqual(result["rules"], content["rules"])
         self.assertIn("amount", json.dumps(sent))
         self.assertNotIn("PRIVATE_ROW_VALUE", json.dumps(sent))
-        self.assertEqual(opened.call_args.kwargs["timeout"], 15)
 
     def test_provider_error_and_invalid_response_are_sanitized(self):
         class BadResponse(self.Response):
             status = 502
 
+        class BadConnection(self.Connection):
+            def getresponse(self):
+                return BadResponse(b"bad")
+
         with patch.dict(os.environ, {"DEEPINFRA_API_KEY": "secret"}), \
-                patch("motor.assistant.urllib.request.urlopen",
-                      return_value=BadResponse(b"bad")):
+                patch("motor.assistant._PinnedHTTPSConnection", BadConnection):
             with self.assertRaisesRegex(assistant.AssistantError, "proveedor"):
                 assistant.propose("ordena", self.schema)
+        invalid = self.Connection("api.deepinfra.com")
+        invalid.payload = b"{}"
         with patch.dict(os.environ, {"DEEPINFRA_API_KEY": "secret"}), \
-                patch("motor.assistant.urllib.request.urlopen",
-                      return_value=self.Response(b"{}")):
+                patch("motor.assistant._PinnedHTTPSConnection", return_value=invalid):
             with self.assertRaisesRegex(assistant.AssistantError, "inválida"):
                 assistant.propose("ordena", self.schema)
 
     def test_provider_network_error_is_sanitized(self):
-        from urllib.error import URLError
-
         with patch.dict(os.environ, {"DEEPINFRA_API_KEY": "secret"}), \
-                patch("motor.assistant.urllib.request.urlopen", side_effect=URLError("private")):
+                patch("motor.assistant._PinnedHTTPSConnection", side_effect=OSError("private")):
             with self.assertRaisesRegex(assistant.AssistantError, "conectar") as error:
                 assistant.propose("ordena", self.schema)
         self.assertNotIn("private", str(error.exception))
 
     def test_provider_response_size_is_capped(self):
+        connection = self.Connection("api.deepinfra.com")
+        connection.payload = b"x" * (64 * 1024 + 1)
         with patch.dict(os.environ, {"DEEPINFRA_API_KEY": "secret"}), \
-                patch("motor.assistant.urllib.request.urlopen",
-                      return_value=self.Response(b"x" * (64 * 1024 + 1))):
+                patch("motor.assistant._PinnedHTTPSConnection", return_value=connection):
             with self.assertRaisesRegex(assistant.AssistantError, "límite"):
                 assistant.propose("ordena", self.schema)
 

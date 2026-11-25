@@ -2,21 +2,63 @@
 
 from __future__ import annotations
 
+import http.client
+import ipaddress
 import json
+import math
 import os
 import re
+import socket
 import sqlite3
+import ssl
 import time
-import urllib.error
-import urllib.request
+from pathlib import Path
 
 from motor.model.rules import RULE_TYPES
 
-_ENDPOINT = "https://api.deepinfra.com/v1/openai/chat/completions"
 _MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731"
 _MAX_INSTRUCTION = 2000
 _MAX_RULES = 8
 _RULE_NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,39}$")
+_GATEWAY_TIMEOUT = 20
+_GATEWAY_MAX_RESPONSE = 64 * 1024
+_PROVIDER_HOST = "api.deepinfra.com"
+_PROVIDER_PATH = "/v1/openai/chat/completions"
+_PROFILE_FIELDS = {
+    "name", "rows", "nulls", "unique", "duplicates", "inferred_type",
+    "numeric_min", "numeric_max",
+}
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """Connect only to globally routable DNS answers while preserving TLS SNI."""
+
+    def connect(self) -> None:
+        try:
+            answers = socket.getaddrinfo(
+                self.host, self.port, type=socket.SOCK_STREAM
+            )
+            addresses = list(dict.fromkeys(item[4][0] for item in answers))
+            if not addresses or any(not ipaddress.ip_address(ip).is_global for ip in addresses):
+                raise OSError("DNS returned a non-public address")
+            last_error = None
+            for address in addresses:
+                raw = None
+                try:
+                    raw = socket.create_connection((address, self.port), self.timeout)
+                    self.sock = self._context.wrap_socket(
+                        raw, server_hostname=self.host
+                    )
+                    return
+                except OSError as exc:
+                    if raw is not None:
+                        raw.close()
+                    last_error = exc
+            raise last_error or OSError("no usable DNS address")
+        except (ValueError, OSError) as exc:
+            raise AssistantError(
+                "No se pudo establecer una conexión segura con DeepInfra."
+            ) from exc
 
 
 class AssistantError(Exception):
@@ -37,9 +79,21 @@ def operations() -> list[dict[str, str]]:
 def propose(instruction: str, schema: list[dict]) -> dict:
     """Ask the configured provider for a JSON proposal using schema only."""
     instruction = _validate_instruction(instruction)
-    key = os.environ.get("DEEPINFRA_API_KEY", "").strip()
+    _validate_profile_schema(schema)
+    credentials_dir = os.environ.get("CREDENTIALS_DIRECTORY")
+    if credentials_dir:
+        try:
+            key = (Path(credentials_dir) / "deepinfra_api_key").read_text(
+                encoding="utf-8"
+            ).strip()
+        except OSError as exc:
+            raise AssistantError("Configura la credencial del adaptador DeepInfra.") from exc
+    else:
+        # Direct invocation is retained for local development; systemd uses a
+        # credential file and never passes the provider key in the environment.
+        key = os.environ.get("DEEPINFRA_API_KEY", "").strip()
     if not key:
-        raise AssistantError("Configura DEEPINFRA_API_KEY en el entorno del motor.")
+        raise AssistantError("Configura la credencial del adaptador DeepInfra.")
     if len(schema) > 128:
         raise AssistantError("El modelo tiene más de 128 columnas; acota el modelo.")
     content = {
@@ -67,19 +121,28 @@ def propose(instruction: str, schema: list[dict]) -> dict:
             {"role": "user", "content": json.dumps(content, ensure_ascii=False)},
         ],
     }).encode("utf-8")
-    request = urllib.request.Request(
-        _ENDPOINT,
-        data=body,
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        method="POST",
-    )
+    connection = None
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            if response.status != 200:
-                raise AssistantError("El proveedor no pudo procesar la propuesta.")
-            raw = response.read(64 * 1024 + 1)
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        connection = _PinnedHTTPSConnection(
+            _PROVIDER_HOST, port=443, timeout=15, context=ssl.create_default_context()
+        )
+        connection.request("POST", _PROVIDER_PATH, body=body, headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "Connection": "close",
+        })
+        response = connection.getresponse()
+        if response.status != 200:
+            raise AssistantError("El proveedor no pudo procesar la propuesta.")
+        raw = response.read(64 * 1024 + 1)
+    except AssistantError:
+        raise
+    except (http.client.HTTPException, TimeoutError, OSError) as exc:
         raise AssistantError("No se pudo conectar con el proveedor de IA.") from exc
+    finally:
+        if connection is not None:
+            connection.close()
     if len(raw) > 64 * 1024:
         raise AssistantError("La respuesta del proveedor excede el límite permitido.")
     try:
@@ -88,6 +151,75 @@ def propose(instruction: str, schema: list[dict]) -> dict:
     except (json.JSONDecodeError, KeyError, IndexError, TypeError, RecursionError):
         raise AssistantError("El proveedor devolvió una propuesta inválida.") from None
     return validate_proposal(result, schema)
+
+
+def propose_via_gateway(instruction: str, schema: list[dict]) -> dict:
+    """Request a proposal from the isolated DeepInfra process over AF_UNIX."""
+    instruction = _validate_instruction(instruction)
+    _validate_profile_schema(schema)
+    socket_path = os.environ.get("YACHAY_DEEPINFRA_SOCKET", "").strip()
+    if not socket_path:
+        runtime = os.environ.get("XDG_RUNTIME_DIR", "")
+        if runtime:
+            socket_path = os.path.join(runtime, "motor-deepinfra", "deepinfra.sock")
+    if not socket_path:
+        raise AssistantError("Configura el socket local del adaptador DeepInfra.")
+    payload = json.dumps(
+        {"instruction": instruction, "schema": schema}, ensure_ascii=False
+    ).encode("utf-8") + b"\n"
+    if len(payload) > 128 * 1024:
+        raise AssistantError("El perfil excede el límite permitido para el adaptador.")
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(_GATEWAY_TIMEOUT)
+            connection.connect(socket_path)
+            connection.sendall(payload)
+            chunks = bytearray()
+            while len(chunks) <= _GATEWAY_MAX_RESPONSE:
+                chunk = connection.recv(min(4096, _GATEWAY_MAX_RESPONSE + 1 - len(chunks)))
+                if not chunk:
+                    break
+                chunks.extend(chunk)
+                if b"\n" in chunk:
+                    break
+    except (OSError, TimeoutError) as exc:
+        raise AssistantError("No se pudo contactar el adaptador local de DeepInfra.") from exc
+    if len(chunks) > _GATEWAY_MAX_RESPONSE or b"\n" not in chunks:
+        raise AssistantError("Respuesta inválida del adaptador local de DeepInfra.")
+    try:
+        envelope = json.loads(bytes(chunks).split(b"\n", 1)[0])
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise AssistantError("Respuesta inválida del adaptador local de DeepInfra.") from None
+    if not isinstance(envelope, dict) or set(envelope) != {"proposal"}:
+        message = envelope.get("error") if isinstance(envelope, dict) else None
+        if isinstance(message, str) and len(message) <= 300:
+            raise AssistantError(message)
+        raise AssistantError("El adaptador local de DeepInfra devolvió un error.")
+    return validate_proposal(envelope["proposal"], schema)
+
+
+def _validate_profile_schema(schema: object) -> None:
+    """Accept only bounded column-profile metadata, never arbitrary row data."""
+    if not isinstance(schema, list) or len(schema) > 128:
+        raise AssistantError("El modelo tiene más de 128 columnas; acota el modelo.")
+    for item in schema:
+        if (not isinstance(item, dict) or not set(item) <= _PROFILE_FIELDS
+                or not isinstance(item.get("name"), str)
+                or not item["name"] or len(item["name"]) > 200):
+            raise AssistantError("El perfil contiene metadatos de columna inválidos.")
+        for field in ("rows", "nulls", "unique", "duplicates"):
+            if field in item and (type(item[field]) is not int or item[field] < 0):
+                raise AssistantError("El perfil contiene estadísticas inválidas.")
+        if "inferred_type" in item and item["inferred_type"] not in ("number", "text"):
+            raise AssistantError("El perfil contiene un tipo inferido inválido.")
+        for field in ("numeric_min", "numeric_max"):
+            value = item.get(field)
+            if value is not None and (
+                (type(value) is int and abs(value) > 2**53)
+                or (type(value) is float and not math.isfinite(value))
+                or type(value) not in (int, float)
+            ):
+                raise AssistantError("El perfil contiene un rango numérico inválido.")
 
 
 def validate_proposal(value: object, schema: list[dict]) -> dict:
