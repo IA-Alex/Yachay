@@ -37,10 +37,7 @@ def derive_column(table: Table, *, name: str, expression: str) -> Table:
         select = []
         replaced = name in table.columns
         for column in table.columns:
-            select.append(
-                f"({sql}) AS {_ident(column)}" if column == name
-                else _ident(column)
-            )
+            select.append(f"({sql}) AS {_ident(column)}" if column == name else _ident(column))
         if not replaced:
             select.append(f"({sql}) AS {_ident(name)}")
         try:
@@ -54,8 +51,11 @@ def derive_column(table: Table, *, name: str, expression: str) -> Table:
 
 def aggregate_table(table: Table, *, by: list[str], metrics: list[dict]) -> Table:
     """Agrupa filas y calcula count/sum/avg/min/max con SQL citado."""
-    if (not isinstance(by, list) or any(not isinstance(column, str) for column in by)
-            or len(set(by)) != len(by)):
+    if (
+        not isinstance(by, list)
+        or any(not isinstance(column, str) for column in by)
+        or len(set(by)) != len(by)
+    ):
         raise TransformError("by debe ser una lista de columnas distintas")
     if not isinstance(metrics, list) or any(not isinstance(metric, dict) for metric in metrics):
         raise TransformError("metrics debe ser una lista de objetos")
@@ -108,12 +108,20 @@ def aggregate_table(table: Table, *, by: list[str], metrics: list[dict]) -> Tabl
 
 
 def pivot_table(
-    table: Table, *, index: list[str], pivot: str, value: str,
-    function: str = "sum", max_columns: int = 100,
+    table: Table,
+    *,
+    index: list[str],
+    pivot: str,
+    value: str,
+    function: str = "sum",
+    max_columns: int = 100,
 ) -> Table:
     """Pivotea valores observados, con orden determinista y tope de columnas."""
-    if (not isinstance(index, list) or any(not isinstance(column, str) for column in index)
-            or len(set(index)) != len(index)):
+    if (
+        not isinstance(index, list)
+        or any(not isinstance(column, str) for column in index)
+        or len(set(index)) != len(index)
+    ):
         raise TransformError("index debe ser una lista de columnas distintas")
     if not isinstance(max_columns, int) or max_columns < 1:
         raise TransformError("max_columns debe ser un entero positivo")
@@ -123,10 +131,18 @@ def pivot_table(
     if pivot == value or pivot in index or value in index:
         raise TransformError("index, pivot y value deben ser columnas distintas")
     pivot_index = table.columns.index(pivot)
-    pivot_values = sorted({str(row[pivot_index]) for row in table.rows
-                           if pivot_index < len(row) and row[pivot_index] is not None})
-    observed = {row[pivot_index] for row in table.rows
-                if pivot_index < len(row) and row[pivot_index] is not None}
+    pivot_values = sorted(
+        {
+            str(row[pivot_index])
+            for row in table.rows
+            if pivot_index < len(row) and row[pivot_index] is not None
+        }
+    )
+    observed = {
+        row[pivot_index]
+        for row in table.rows
+        if pivot_index < len(row) and row[pivot_index] is not None
+    }
     if len({str(value) for value in observed}) != len(observed):
         raise TransformError("valores del pivote distintos producen el mismo nombre de columna")
     if len(pivot_values) > max_columns:
@@ -152,18 +168,33 @@ def pivot_table(
     return Table(columns=output_columns, rows=rows)
 
 
-def unpivot_table(table: Table, *, index: list[str], columns: list[str],
-                  name_column: str = "variable", value_column: str = "value") -> Table:
+def unpivot_table(
+    table: Table,
+    *,
+    index: list[str],
+    columns: list[str],
+    name_column: str = "variable",
+    value_column: str = "value",
+) -> Table:
     """Convierte columnas indicadas en pares nombre/valor y conserva dimensiones."""
-    if (not isinstance(index, list) or not isinstance(columns, list)
-            or any(not isinstance(column, str) for column in [*index, *columns])
-            or len(set(index)) != len(index) or len(set(columns)) != len(columns)):
+    if (
+        not isinstance(index, list)
+        or not isinstance(columns, list)
+        or any(not isinstance(column, str) for column in [*index, *columns])
+        or len(set(index)) != len(index)
+        or len(set(columns)) != len(columns)
+    ):
         raise TransformError("index y columns deben ser listas de nombres distintos")
     _require_columns(table, [*index, *columns])
     if not columns:
         raise TransformError("unpivot necesita al menos una columna de valor")
-    if (not isinstance(name_column, str) or not isinstance(value_column, str)
-            or name_column == value_column or name_column in index or value_column in index):
+    if (
+        not isinstance(name_column, str)
+        or not isinstance(value_column, str)
+        or name_column == value_column
+        or name_column in index
+        or value_column in index
+    ):
         raise TransformError("los nombres de salida deben ser distintos de las dimensiones")
     _check_size(len(table.rows) * len(columns), len(index) + 2)
     index_positions = [table.columns.index(column) for column in index]
@@ -177,7 +208,9 @@ def unpivot_table(table: Table, *, index: list[str], columns: list[str],
 
 
 def normalize_table(
-    table: Table, *, numbers: dict[str, dict] | None = None,
+    table: Table,
+    *,
+    numbers: dict[str, dict] | None = None,
     dates: dict[str, str] | None = None,
 ) -> tuple[Table, dict]:
     """Normaliza formatos solo en columnas configuradas explícitamente."""
@@ -213,12 +246,14 @@ def normalize_table(
                 continue
             try:
                 row[index] = _parse_number(
-                    value, decimal=spec.get("decimal", "."),
+                    value,
+                    decimal=spec.get("decimal", "."),
                     thousands=spec.get("thousands", ""),
                 )
             except ValueError:
-                failures.append({"row": row_number, "column": table.columns[index],
-                                 "kind": "number"})
+                failures.append(
+                    {"row": row_number, "column": table.columns[index], "kind": "number"}
+                )
         for index, fmt in date_positions.items():
             value = row[index] if index < len(row) else None
             if value is None or value == "":
@@ -231,11 +266,11 @@ def normalize_table(
                 else:
                     row[index] = parsed.date().isoformat()
             except ValueError:
-                failures.append({"row": row_number, "column": table.columns[index],
-                                 "kind": "date"})
+                failures.append({"row": row_number, "column": table.columns[index], "kind": "date"})
         rows.append(row)
     return Table(columns=list(table.columns), rows=rows), {
-        "rows": len(rows), "parse_failures": failures,
+        "rows": len(rows),
+        "parse_failures": failures,
         "failure_count": len(failures),
     }
 
@@ -247,14 +282,16 @@ def _compile_expression(expression: str, columns: set[str]) -> str:
         tree = ast.parse(expression, mode="eval")
         return _node_sql(tree.body, columns)
     except (SyntaxError, TypeError, ValueError) as exc:
-        if isinstance(exc, TransformError):
-            raise
         raise TransformError("expresión inválida o con operaciones no permitidas") from exc
 
 
 def _node_sql(node: ast.AST, columns: set[str]) -> str:
     operators = {
-        ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/", ast.Mod: "%",
+        ast.Add: "+",
+        ast.Sub: "-",
+        ast.Mult: "*",
+        ast.Div: "/",
+        ast.Mod: "%",
     }
     if isinstance(node, ast.Constant) and isinstance(node.value, (str, int, float)):
         if isinstance(node.value, str):
@@ -271,8 +308,9 @@ def _node_sql(node: ast.AST, columns: set[str]) -> str:
     if isinstance(node, ast.BinOp) and type(node.op) in operators:
         left = _node_sql(node.left, columns)
         right = _node_sql(node.right, columns)
-        return f"(TRY_CAST({left} AS DOUBLE) {operators[type(node.op)]} " \
-               f"TRY_CAST({right} AS DOUBLE))"
+        return (
+            f"(TRY_CAST({left} AS DOUBLE) {operators[type(node.op)]} TRY_CAST({right} AS DOUBLE))"
+        )
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
         sign = "+" if isinstance(node.op, ast.UAdd) else "-"
         return f"({sign}TRY_CAST({_node_sql(node.operand, columns)} AS DOUBLE))"
@@ -333,8 +371,6 @@ def _aggregate_values(values: list, function: str):
             if not math.isfinite(number):
                 raise TransformError("sum/avg encontró un número no finito")
             numbers.append(number)
-        if not numbers:
-            return None
         return sum(numbers) if function == "sum" else sum(numbers) / len(numbers)
     chooser = min if function == "min" else max
     return chooser(present, key=lambda value: str(value))
@@ -346,8 +382,9 @@ def _parse_number(value, *, decimal: str, thousands: str) -> float:
     if decimal == thousands and thousands:
         raise TransformError("separador decimal y de miles deben ser distintos")
     text = str(value).strip()
-    group_pattern = (rf"(?:[0-9]+|[0-9]{{1,3}}(?:{re.escape(thousands)}[0-9]{{3}})+)"
-                     if thousands else r"[0-9]+")
+    group_pattern = (
+        rf"(?:[0-9]+|[0-9]{{1,3}}(?:{re.escape(thousands)}[0-9]{{3}})+)" if thousands else r"[0-9]+"
+    )
     decimal_pattern = re.escape(decimal)
     numeric_pattern = rf"[+-]?{group_pattern}(?:{decimal_pattern}[0-9]+)?(?:[eE][+-]?[0-9]+)?"
     if not re.fullmatch(numeric_pattern, text):

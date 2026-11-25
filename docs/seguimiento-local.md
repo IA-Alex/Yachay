@@ -29,7 +29,7 @@ un contrato cerrado.
 | T-019 | **Cumplida** | **M5 — Repetir**: automatización y diff de versiones | `yachay model exec` guarda la huella (columnas+filas+sha256, sin datos) y `model diff` dice qué cambió; probado 96→68 con la bitácora real |
 | T-020 | **Cumplida** | **M6 — UI de modelado y resultados** | Siete vistas: Cargar archivo, Modelo, Ejecutar, Resultados (+ estado, cola y catálogo). Endpoints `models`, `profile`, `runs`, `diff`, `orphans`. Flujo completo verificado: perfil → modelo → ejecución → diff |
 | T-021 | **Cumplida** | Robustez ante entrada no confiable (auditoría de backend F-01/F-02/F-03) | El worker falla el job en vez de caer ante contenido no confiable; los lectores traducen errores de parseo a `UnsupportedFormat` (400, no 500); el retry no resucita un job terminal; 7 pruebas de regresión, 412 pruebas y 100% de cobertura |
-| T-022 | **Cumplida funcionalmente (2026-11-24)** | Ampliar funciones nativas del motor local (ADR-021) | T-024–T-033 validadas con aceptación CLI en raíz temporal, fixtures locales y reconciliación independiente; evidencia: `audit/validacion-T022-2026-11-24.md`. El gate funcional pasa; pendiente separado T-035 para restaurar el umbral de cobertura global |
+| T-022 | **Cumplida (2026-11-24)** | Ampliar funciones nativas del motor local (ADR-021) | T-024–T-033 validadas con aceptación CLI en raíz temporal, fixtures locales y reconciliación independiente; evidencia: `audit/validacion-T022-2026-11-24.md`. El gate funcional y la cobertura global al 100% están restaurados; ver evidencia T-035 |
 | T-023 | Pendiente — posterior a T-022 | Ampliar la asistencia de DeepInfra con interacción conversacional | Permitir describir necesidades en lenguaje natural y recibir propuestas dentro de las capacidades del motor; mantener vista previa y aceptación humana, sin ejecutar ni aplicar cambios automáticamente. Requiere conexión a DeepInfra |
 | T-024 | **Validada (2026-11-24)** | Alinear esquemas entre fuentes | CLI contrastó mapeo de columnas, unión estable, columnas ausentes y salida CSV; reconciliación de filas/valores |
 | T-025 | **Validada (2026-11-24)** | Validaciones de calidad por fila | Reglas required/unique/range/format, filas inválidas y XLSX de errores; se comprobó que el informe no contiene los valores de las celdas |
@@ -42,7 +42,7 @@ un contrato cerrado.
 | T-032 | **Validada (2026-11-24)** | Ejecución incremental | Delta reemplazó por clave y añadió fila; Parquet releído independientemente; versión obsoleta rechazada |
 | T-033 | **Validada (2026-11-24)** | Metadatos de reproducibilidad | Versión motor/modelo, fuente y SHA-256, parámetros y huella cotejados; repetición produjo la misma huella |
 | T-034 | Implementada; validación local aprobada; despliegue de host pendiente | Aislar la salida de DeepInfra | Adaptador con UID dedicado, firewall nftables por UID/IP/puerto, refresco DNS y fail-closed; API/worker sin clave ni red IP; ADR-022 |
-| T-035 | Pendiente | Restaurar cobertura global del gate tras ADR-021 | `./scripts/test.sh` ejecuta las pruebas sin fallos, pero Coverage reporta 80% total frente al `fail_under=100`; completar cobertura de los módulos funcionales nuevos (incluidos `quality.py`, `exports.py`, `transforms.py`, `engine.py` y rutas CLI) sin bajar el umbral |
+| T-035 | **Cumplida (2026-11-24)** | Restaurar cobertura global del gate tras ADR-021 | `./scripts/test.sh`: 589 pruebas aprobadas, 22 omitidas, 100% de cobertura de sentencias y ramas, `fail_under=100`; evidencia: `audit/validacion-T035-2026-11-24.md` |
 
 ## Decisiones
 

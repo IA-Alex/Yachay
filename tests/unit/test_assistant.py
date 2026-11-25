@@ -6,7 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from motor import assistant
 from motor.model import rules, store
@@ -17,21 +17,25 @@ class AssistantValidationTests(unittest.TestCase):
     schema = [{"name": "amount"}, {"name": "status"}]
 
     def test_registry_lists_only_existing_deterministic_rules(self):
-        self.assertEqual([item["type"] for item in assistant.operations()],
-                         list(rules.RULE_TYPES))
+        self.assertEqual([item["type"] for item in assistant.operations()], list(rules.RULE_TYPES))
 
     def test_valid_proposal_supports_all_existing_rule_shapes(self):
         ruleset = [
-            {"name": "rename_a", "type": "rename", "column": "amount",
-             "params": {"to": "total"}},
-            {"name": "cast_a", "type": "cast", "column": "amount",
-             "params": {"to": "number"}},
-            {"name": "map_a", "type": "map", "column": "status",
-             "params": {"values": {"raw": "clean"}}},
-            {"name": "domain_a", "type": "domain", "column": "status",
-             "params": {"allowed": ["ok"]}},
-            {"name": "filter_a", "type": "filter", "column": "status",
-             "params": {"equals": "ok"}},
+            {"name": "rename_a", "type": "rename", "column": "amount", "params": {"to": "total"}},
+            {"name": "cast_a", "type": "cast", "column": "amount", "params": {"to": "number"}},
+            {
+                "name": "map_a",
+                "type": "map",
+                "column": "status",
+                "params": {"values": {"raw": "clean"}},
+            },
+            {
+                "name": "domain_a",
+                "type": "domain",
+                "column": "status",
+                "params": {"allowed": ["ok"]},
+            },
+            {"name": "filter_a", "type": "filter", "column": "status", "params": {"equals": "ok"}},
         ]
         actual = assistant.validate_proposal({"summary": "Listo", "rules": ruleset}, self.schema)
         self.assertEqual(actual["rules"], ruleset)
@@ -51,10 +55,13 @@ class AssistantValidationTests(unittest.TestCase):
                 assistant.propose("limpia amount", [{"name": str(i)} for i in range(129)])
 
     def test_rejects_malformed_proposal_envelope(self):
-        for value in ([], {"summary": "ok", "rules": [], "extra": True},
-                      {"summary": "", "rules": []},
-                      {"summary": "x" * 501, "rules": []},
-                      {"summary": "ok", "rules": "not-list"}):
+        for value in (
+            [],
+            {"summary": "ok", "rules": [], "extra": True},
+            {"summary": "", "rules": []},
+            {"summary": "x" * 501, "rules": []},
+            {"summary": "ok", "rules": "not-list"},
+        ):
             with self.subTest(value=value), self.assertRaises(assistant.AssistantError):
                 assistant.validate_proposal(value, self.schema)
 
@@ -92,8 +99,12 @@ class AssistantValidationTests(unittest.TestCase):
 
     @staticmethod
     def _rule(name, *, type="cast", column="amount", params=None):
-        return {"name": name, "type": type,
-                "column": column, "params": {"to": "number"} if params is None else params}
+        return {
+            "name": name,
+            "type": type,
+            "column": column,
+            "params": {"to": "number"} if params is None else params,
+        }
 
 
 class AssistantProviderTests(unittest.TestCase):
@@ -130,17 +141,29 @@ class AssistantProviderTests(unittest.TestCase):
             pass
 
     def test_provider_receives_schema_but_no_source_rows(self):
-        content = {"summary": "Convertir amount", "rules": [
-            {"name": "amount_number", "type": "cast", "column": "amount",
-             "params": {"to": "number"}},
-        ]}
+        content = {
+            "summary": "Convertir amount",
+            "rules": [
+                {
+                    "name": "amount_number",
+                    "type": "cast",
+                    "column": "amount",
+                    "params": {"to": "number"},
+                },
+            ],
+        }
         connection = self.Connection("api.deepinfra.com")
         connection.payload = self._response(content)
-        with patch.dict(os.environ, {"DEEPINFRA_API_KEY": "test-secret"}), \
-                patch("motor.assistant._PinnedHTTPSConnection", return_value=connection):
-            result = assistant.propose("convierte amount a número", [
-                {"name": "amount", "inferred_type": "text", "rows": 12},
-            ])
+        with (
+            patch.dict(os.environ, {"DEEPINFRA_API_KEY": "test-secret"}),
+            patch("motor.assistant._PinnedHTTPSConnection", return_value=connection),
+        ):
+            result = assistant.propose(
+                "convierte amount a número",
+                [
+                    {"name": "amount", "inferred_type": "text", "rows": 12},
+                ],
+            )
         sent = json.loads(connection.body)
         self.assertEqual(result["rules"], content["rules"])
         self.assertIn("amount", json.dumps(sent))
@@ -154,20 +177,26 @@ class AssistantProviderTests(unittest.TestCase):
             def getresponse(self):
                 return BadResponse(b"bad")
 
-        with patch.dict(os.environ, {"DEEPINFRA_API_KEY": "secret"}), \
-                patch("motor.assistant._PinnedHTTPSConnection", BadConnection):
+        with (
+            patch.dict(os.environ, {"DEEPINFRA_API_KEY": "secret"}),
+            patch("motor.assistant._PinnedHTTPSConnection", BadConnection),
+        ):
             with self.assertRaisesRegex(assistant.AssistantError, "proveedor"):
                 assistant.propose("ordena", self.schema)
         invalid = self.Connection("api.deepinfra.com")
         invalid.payload = b"{}"
-        with patch.dict(os.environ, {"DEEPINFRA_API_KEY": "secret"}), \
-                patch("motor.assistant._PinnedHTTPSConnection", return_value=invalid):
+        with (
+            patch.dict(os.environ, {"DEEPINFRA_API_KEY": "secret"}),
+            patch("motor.assistant._PinnedHTTPSConnection", return_value=invalid),
+        ):
             with self.assertRaisesRegex(assistant.AssistantError, "inválida"):
                 assistant.propose("ordena", self.schema)
 
     def test_provider_network_error_is_sanitized(self):
-        with patch.dict(os.environ, {"DEEPINFRA_API_KEY": "secret"}), \
-                patch("motor.assistant._PinnedHTTPSConnection", side_effect=OSError("private")):
+        with (
+            patch.dict(os.environ, {"DEEPINFRA_API_KEY": "secret"}),
+            patch("motor.assistant._PinnedHTTPSConnection", side_effect=OSError("private")),
+        ):
             with self.assertRaisesRegex(assistant.AssistantError, "conectar") as error:
                 assistant.propose("ordena", self.schema)
         self.assertNotIn("private", str(error.exception))
@@ -175,8 +204,10 @@ class AssistantProviderTests(unittest.TestCase):
     def test_provider_response_size_is_capped(self):
         connection = self.Connection("api.deepinfra.com")
         connection.payload = b"x" * (64 * 1024 + 1)
-        with patch.dict(os.environ, {"DEEPINFRA_API_KEY": "secret"}), \
-                patch("motor.assistant._PinnedHTTPSConnection", return_value=connection):
+        with (
+            patch.dict(os.environ, {"DEEPINFRA_API_KEY": "secret"}),
+            patch("motor.assistant._PinnedHTTPSConnection", return_value=connection),
+        ):
             with self.assertRaisesRegex(assistant.AssistantError, "límite"):
                 assistant.propose("ordena", self.schema)
 
@@ -195,13 +226,193 @@ class AssistantProviderTests(unittest.TestCase):
                     (["127.0.0.1"], time.time()),
                     (["8.8.8.8"], time.time() - 181),
                 ):
-                    path.write_text(json.dumps({
-                        "host": "api.deepinfra.com",
-                        "addresses": addresses,
-                        "refreshed_at": refreshed_at,
-                    }), encoding="utf-8")
+                    path.write_text(
+                        json.dumps(
+                            {
+                                "host": "api.deepinfra.com",
+                                "addresses": addresses,
+                                "refreshed_at": refreshed_at,
+                            }
+                        ),
+                        encoding="utf-8",
+                    )
                     with self.assertRaises(assistant.AssistantError):
                         assistant._provider_addresses("api.deepinfra.com")
+                path.write_text(json.dumps(good), encoding="utf-8")
+                old = time.time() - 181
+                os.utime(path, (old, old))
+                with patch.dict(os.environ, {"YACHAY_DEEPINFRA_IPS_FILE": str(path)}):
+                    with self.assertRaises(assistant.AssistantError):
+                        assistant._provider_addresses("api.deepinfra.com")
+
+    def test_dns_resolution_and_pinned_connection_failures(self):
+        answer = (0, 0, 0, "", ("8.8.8.8", 443))
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("motor.assistant.socket.getaddrinfo", return_value=[answer, answer]),
+        ):
+            self.assertEqual(assistant._provider_addresses("api.deepinfra.com"), ["8.8.8.8"])
+        for answers in ([], [(0, 0, 0, "", ("127.0.0.1", 443))]):
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch("motor.assistant.socket.getaddrinfo", return_value=answers),
+                self.assertRaises(assistant.AssistantError),
+            ):
+                assistant._provider_addresses("api.deepinfra.com")
+
+        class Raw:
+            closed = False
+
+            def close(self):
+                self.closed = True
+
+        class Context:
+            def wrap_socket(self, raw, *, server_hostname):
+                self.host = server_hostname
+                return (raw, server_hostname)
+
+        raw = Raw()
+        context = Context()
+        connection = assistant._PinnedHTTPSConnection("api.deepinfra.com", context=context)
+        with (
+            patch("motor.assistant._provider_addresses", return_value=["8.8.8.8"]),
+            patch("motor.assistant.socket.create_connection", return_value=raw),
+        ):
+            connection.connect()
+        self.assertEqual(connection.sock, (raw, "api.deepinfra.com"))
+        raw2 = Raw()
+        context2 = Mock()
+        context2.wrap_socket.side_effect = OSError("TLS failed")
+        failed = assistant._PinnedHTTPSConnection("api.deepinfra.com", context=context2)
+        with (
+            patch("motor.assistant._provider_addresses", return_value=["8.8.8.8"]),
+            patch("motor.assistant.socket.create_connection", return_value=raw2),
+            self.assertRaises(assistant.AssistantError),
+        ):
+            failed.connect()
+        self.assertTrue(raw2.closed)
+        failed_before_socket = assistant._PinnedHTTPSConnection(
+            "api.deepinfra.com", context=context
+        )
+        with (
+            patch("motor.assistant._provider_addresses", return_value=["8.8.8.8"]),
+            patch("motor.assistant.socket.create_connection", side_effect=OSError("offline")),
+            self.assertRaises(assistant.AssistantError),
+        ):
+            failed_before_socket.connect()
+
+    def test_credential_directory_and_provider_exception_edges(self):
+        with patch.dict(os.environ, {"CREDENTIALS_DIRECTORY": "/path/does/not/exist"}, clear=True):
+            with self.assertRaisesRegex(assistant.AssistantError, "credencial"):
+                assistant.propose("ordena", self.schema)
+        with (
+            patch.dict(os.environ, {"DEEPINFRA_API_KEY": "secret"}, clear=True),
+            patch("motor.assistant._PinnedHTTPSConnection", side_effect=OSError("setup")) as create,
+        ):
+            with self.assertRaisesRegex(assistant.AssistantError, "conectar"):
+                assistant.propose("ordena", self.schema)
+            create.assert_called_once()
+        for raw in (b"no json", b'{"choices": []}', b'{"choices":[{"message":{}}]}'):
+            connection = self.Connection("api.deepinfra.com")
+            connection.payload = raw
+            with (
+                patch.dict(os.environ, {"DEEPINFRA_API_KEY": "secret"}),
+                patch("motor.assistant._PinnedHTTPSConnection", return_value=connection),
+                self.assertRaises(assistant.AssistantError),
+            ):
+                assistant.propose("ordena", self.schema)
+
+    def test_gateway_client_handles_success_and_sanitized_failures(self):
+        proposal = {"summary": "ok", "rules": []}
+
+        class FakeSocket:
+            def __init__(self, chunks):
+                self.chunks = list(chunks)
+                self.sent = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def settimeout(self, value):
+                self.timeout = value
+
+            def connect(self, path):
+                self.path = path
+
+            def sendall(self, payload):
+                self.sent = payload
+
+            def recv(self, _limit):
+                return self.chunks.pop(0) if self.chunks else b""
+
+        valid = json.dumps({"proposal": proposal}).encode() + b"\n"
+        fake = FakeSocket([valid])
+        with (
+            patch.dict(os.environ, {"YACHAY_DEEPINFRA_SOCKET": "/tmp/gateway.sock"}),
+            patch("motor.assistant.socket.socket", return_value=fake),
+        ):
+            self.assertEqual(assistant.propose_via_gateway("ordena", self.schema), proposal)
+        self.assertIn(b"instruction", fake.sent)
+
+        for chunks, expected in (
+            ([b'{"proposal":{}'], "Respuesta inválida"),
+            ([b'{"proposal":', b'{"summary":"ok","rules":[]}\n'], ""),
+            ([b"invalid\n"], "Respuesta inválida"),
+            ([b"x" * (assistant._GATEWAY_MAX_RESPONSE + 1)], "Respuesta inválida"),
+            ([b'{"error":"safe"}\n'], "safe"),
+            ([json.dumps({"error": "x" * 301}).encode() + b"\n"], "error"),
+            ([b'{"other":1}\n'], "error"),
+        ):
+            fake = FakeSocket(chunks)
+            with (
+                patch.dict(os.environ, {"YACHAY_DEEPINFRA_SOCKET": "/tmp/gateway.sock"}),
+                patch("motor.assistant.socket.socket", return_value=fake),
+                self.assertRaises(assistant.AssistantError) as error,
+            ):
+                assistant.propose_via_gateway("ordena", self.schema)
+            if expected:
+                self.assertIn(expected, str(error.exception))
+
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(assistant.AssistantError, "socket local"):
+                assistant.propose_via_gateway("ordena", self.schema)
+        with (
+            patch.dict(os.environ, {"XDG_RUNTIME_DIR": "/run/user/42"}, clear=True),
+            patch("motor.assistant.socket.socket", side_effect=OSError("offline")),
+        ):
+            with self.assertRaisesRegex(assistant.AssistantError, "adaptador local"):
+                assistant.propose_via_gateway("ordena", self.schema)
+
+    def test_profile_schema_rejects_untrusted_metadata(self):
+        invalid = [
+            {},
+            [None],
+            [{"name": ""}],
+            [{"name": "x" * 201}],
+            [{"name": "x", "unknown": 1}],
+            *[
+                {"name": "x", field: value}
+                for field, value in (
+                    ("rows", True),
+                    ("nulls", -1),
+                    ("unique", 1.5),
+                    ("duplicates", "2"),
+                    ("inferred_type", "date"),
+                    ("numeric_min", 2**54),
+                    ("numeric_max", float("inf")),
+                    ("numeric_min", "1"),
+                )
+            ],
+        ]
+        for schema in invalid:
+            with self.subTest(schema=schema), self.assertRaises(assistant.AssistantError):
+                assistant._validate_profile_schema(schema)
+        assistant._validate_profile_schema(
+            [{"name": "x", "rows": 0, "inferred_type": "number", "numeric_min": None}]
+        )
 
     @property
     def schema(self):
@@ -217,28 +428,39 @@ class ApplyProposalTests(unittest.TestCase):
         entity = store.add_entity(self.conn, self.model_id, name="Venta")
         store.add_attribute(self.conn, entity, name="importe", type="number", nullable=False)
         store.set_key(self.conn, entity, columns=["importe"])
-        rules.add(self.conn, self.model_id, name="existing", type="cast",
-                  column="importe", params={"to": "number"})
+        rules.add(
+            self.conn,
+            self.model_id,
+            name="existing",
+            type="cast",
+            column="importe",
+            params={"to": "number"},
+        )
         self.conn.execute(
             "INSERT INTO joins (model_id, name, left_ref, right_ref, on_pairs, type, position) "
-            "VALUES (?, 'j', 'a', 'b', '[]', 'inner', 0)", (self.model_id,)
+            "VALUES (?, 'j', 'a', 'b', '[]', 'inner', 0)",
+            (self.model_id,),
         )
 
     def test_applies_rules_to_a_new_complete_version(self):
-        proposal = [{"name": "importe_text", "type": "cast", "column": "importe",
-                     "params": {"to": "text"}}]
-        new_id, version = assistant.apply_as_new_version(
-            self.conn, self.model_id, proposal, now=2
-        )
+        proposal = [
+            {"name": "importe_text", "type": "cast", "column": "importe", "params": {"to": "text"}}
+        ]
+        new_id, version = assistant.apply_as_new_version(self.conn, self.model_id, proposal, now=2)
         self.assertEqual(version, 2)
         self.assertEqual(store.get(self.conn, new_id).entities[0].key, ["importe"])
-        self.assertEqual([rule.name for rule in rules.list_for(self.conn, new_id)],
-                         ["existing", "importe_text"])
-        self.assertEqual(self.conn.execute(
-            "SELECT COUNT(*) FROM joins WHERE model_id = ?", (new_id,)
-        ).fetchone()[0], 1)
-        self.assertEqual([rule.name for rule in rules.list_for(self.conn, self.model_id)],
-                         ["existing"])
+        self.assertEqual(
+            [rule.name for rule in rules.list_for(self.conn, new_id)], ["existing", "importe_text"]
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM joins WHERE model_id = ?", (new_id,)
+            ).fetchone()[0],
+            1,
+        )
+        self.assertEqual(
+            [rule.name for rule in rules.list_for(self.conn, self.model_id)], ["existing"]
+        )
 
     def test_rejects_nonexistent_model_and_rolls_back(self):
         with self.assertRaises(assistant.AssistantError):
@@ -252,10 +474,8 @@ class ApplyProposalTests(unittest.TestCase):
 
     def test_rejects_duplicate_rule_and_unknown_column_without_partial_clone(self):
         proposals = [
-            [{"name": "existing", "type": "cast", "column": "importe",
-              "params": {"to": "text"}}],
-            [{"name": "new_rule", "type": "cast", "column": "other",
-              "params": {"to": "text"}}],
+            [{"name": "existing", "type": "cast", "column": "importe", "params": {"to": "text"}}],
+            [{"name": "new_rule", "type": "cast", "column": "other", "params": {"to": "text"}}],
             [{"name": "bad_type", "type": "noop", "column": "importe", "params": {}}],
         ]
         for proposal in proposals:

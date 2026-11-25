@@ -1,16 +1,17 @@
+import contextlib
 import csv
 import hashlib
+import io
 import json
 import os
 import pathlib
-import subprocess
-import sys
 import tempfile
 
 import duckdb
 import pyarrow.parquet as pqreader
 from openpyxl import load_workbook
 
+from motor.__main__ import main as motor_main
 from motor.config import MotorConfig
 from motor.model import run as runstore
 from motor.model import store
@@ -32,21 +33,18 @@ def write_csv(name, columns, rows):
 
 
 def cli(*args, ok=True):
-    r = subprocess.run(
-        [sys.executable, "-m", "motor", *map(str, args)],
-        cwd=ROOT,
-        env=ENV,
-        text=True,
-        capture_output=True,
-    )
-    if (r.returncode == 0) != ok:
-        raise AssertionError(f"CLI {args} rc={r.returncode} stdout={r.stdout} stderr={r.stderr}")
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        return_code = motor_main([str(arg) for arg in args])
+    stdout = output.getvalue()
+    if (return_code == 0) != ok:
+        raise AssertionError(f"CLI {args} rc={return_code} stdout={stdout}")
     if ok:
         try:
-            return json.loads(r.stdout)
+            return json.loads(stdout)
         except Exception as e:
-            raise AssertionError((args, r.stdout, r.stderr)) from e
-    return r
+            raise AssertionError((args, stdout)) from e
+    return type("CliFailure", (), {"stdout": stdout})()
 
 
 ROOTARG = ["--root", str(TMP)]

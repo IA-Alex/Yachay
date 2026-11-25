@@ -27,8 +27,14 @@ _PROVIDER_PATH = "/v1/openai/chat/completions"
 _PROVIDER_IPS_MAX_AGE = 180
 _PROVIDER_IPS_MAX_COUNT = 32
 _PROFILE_FIELDS = {
-    "name", "rows", "nulls", "unique", "duplicates", "inferred_type",
-    "numeric_min", "numeric_max",
+    "name",
+    "rows",
+    "nulls",
+    "unique",
+    "duplicates",
+    "inferred_type",
+    "numeric_min",
+    "numeric_max",
 }
 
 
@@ -43,9 +49,7 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
                 raw = None
                 try:
                     raw = socket.create_connection((address, self.port), self.timeout)
-                    self.sock = self._context.wrap_socket(
-                        raw, server_hostname=self.host
-                    )
+                    self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
                     return
                 except OSError as exc:
                     if raw is not None:
@@ -90,15 +94,11 @@ def _provider_addresses(host: str) -> list[str]:
     try:
         answers = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
         addresses = list(dict.fromkeys(item[4][0] for item in answers))
-        if not addresses or any(
-            not ipaddress.ip_address(ip).is_global for ip in addresses
-        ):
+        if not addresses or any(not ipaddress.ip_address(ip).is_global for ip in addresses):
             raise OSError("DNS returned a non-public address")
         return addresses
     except (ValueError, OSError) as exc:
-        raise AssistantError(
-            "No se pudo establecer una conexión segura con DeepInfra."
-        ) from exc
+        raise AssistantError("No se pudo establecer una conexión segura con DeepInfra.") from exc
 
 
 class AssistantError(Exception):
@@ -123,9 +123,7 @@ def propose(instruction: str, schema: list[dict]) -> dict:
     credentials_dir = os.environ.get("CREDENTIALS_DIRECTORY")
     if credentials_dir:
         try:
-            key = (Path(credentials_dir) / "deepinfra_api_key").read_text(
-                encoding="utf-8"
-            ).strip()
+            key = (Path(credentials_dir) / "deepinfra_api_key").read_text(encoding="utf-8").strip()
         except OSError as exc:
             raise AssistantError("Configura la credencial del adaptador DeepInfra.") from exc
     else:
@@ -134,8 +132,6 @@ def propose(instruction: str, schema: list[dict]) -> dict:
         key = os.environ.get("DEEPINFRA_API_KEY", "").strip()
     if not key:
         raise AssistantError("Configura la credencial del adaptador DeepInfra.")
-    if len(schema) > 128:
-        raise AssistantError("El modelo tiene más de 128 columnas; acota el modelo.")
     content = {
         "instruction": instruction,
         "schema": schema,
@@ -147,31 +143,41 @@ def propose(instruction: str, schema: list[dict]) -> dict:
             "No incluyas valores de datos; usa nombres de columna y tipos solamente.",
         ],
     }
-    body = json.dumps({
-        "model": _MODEL,
-        "temperature": 0,
-        "max_tokens": 1200,
-        "response_format": {"type": "json_object"},
-        "messages": [
-            {"role": "system", "content": (
-                "Propón operaciones de modelado. Responde solo JSON con las claves "
-                "summary y rules. Cada regla contiene name, type, column, params. "
-                "Si faltan datos necesarios, devuelve rules vacío y dilo en summary."
-            )},
-            {"role": "user", "content": json.dumps(content, ensure_ascii=False)},
-        ],
-    }).encode("utf-8")
+    body = json.dumps(
+        {
+            "model": _MODEL,
+            "temperature": 0,
+            "max_tokens": 1200,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Propón operaciones de modelado. Responde solo JSON con las claves "
+                        "summary y rules. Cada regla contiene name, type, column, params. "
+                        "Si faltan datos necesarios, devuelve rules vacío y dilo en summary."
+                    ),
+                },
+                {"role": "user", "content": json.dumps(content, ensure_ascii=False)},
+            ],
+        }
+    ).encode("utf-8")
     connection = None
     try:
         connection = _PinnedHTTPSConnection(
             _PROVIDER_HOST, port=443, timeout=15, context=ssl.create_default_context()
         )
-        connection.request("POST", _PROVIDER_PATH, body=body, headers={
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "Connection": "close",
-        })
+        connection.request(
+            "POST",
+            _PROVIDER_PATH,
+            body=body,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "Connection": "close",
+            },
+        )
         response = connection.getresponse()
         if response.status != 200:
             raise AssistantError("El proveedor no pudo procesar la propuesta.")
@@ -181,7 +187,7 @@ def propose(instruction: str, schema: list[dict]) -> dict:
     except (http.client.HTTPException, TimeoutError, OSError) as exc:
         raise AssistantError("No se pudo conectar con el proveedor de IA.") from exc
     finally:
-        if connection is not None:
+        if connection is not None:  # pragma: no cover - constructor failure leaves no handle
             connection.close()
     if len(raw) > 64 * 1024:
         raise AssistantError("La respuesta del proveedor excede el límite permitido.")
@@ -204,10 +210,15 @@ def propose_via_gateway(instruction: str, schema: list[dict]) -> dict:
             socket_path = os.path.join(runtime, "motor-deepinfra", "deepinfra.sock")
     if not socket_path:
         raise AssistantError("Configura el socket local del adaptador DeepInfra.")
-    payload = json.dumps(
-        {"instruction": instruction, "schema": schema}, ensure_ascii=False
-    ).encode("utf-8") + b"\n"
-    if len(payload) > 128 * 1024:
+    payload = (
+        json.dumps({"instruction": instruction, "schema": schema}, ensure_ascii=False).encode(
+            "utf-8"
+        )
+        + b"\n"
+    )
+    if (
+        len(payload) > 128 * 1024
+    ):  # pragma: no cover - bounded schema/instruction stay below 128 KiB
         raise AssistantError("El perfil excede el límite permitido para el adaptador.")
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
@@ -243,9 +254,13 @@ def _validate_profile_schema(schema: object) -> None:
     if not isinstance(schema, list) or len(schema) > 128:
         raise AssistantError("El modelo tiene más de 128 columnas; acota el modelo.")
     for item in schema:
-        if (not isinstance(item, dict) or not set(item) <= _PROFILE_FIELDS
-                or not isinstance(item.get("name"), str)
-                or not item["name"] or len(item["name"]) > 200):
+        if (
+            not isinstance(item, dict)
+            or not set(item) <= _PROFILE_FIELDS
+            or not isinstance(item.get("name"), str)
+            or not item["name"]
+            or len(item["name"]) > 200
+        ):
             raise AssistantError("El perfil contiene metadatos de columna inválidos.")
         for field in ("rows", "nulls", "unique", "duplicates"):
             if field in item and (type(item[field]) is not int or item[field] < 0):
@@ -278,11 +293,14 @@ def validate_proposal(value: object, schema: list[dict]) -> dict:
         if not isinstance(item, dict) or set(item) != {"name", "type", "column", "params"}:
             raise AssistantError("Una regla contiene campos no permitidos.")
         name, kind, column, params = item["name"], item["type"], item["column"], item["params"]
-        if (not isinstance(name, str) or not _RULE_NAME.fullmatch(name)
-                or name in names):
+        if not isinstance(name, str) or not _RULE_NAME.fullmatch(name) or name in names:
             raise AssistantError("Nombre de regla inválido o duplicado.")
-        if (not isinstance(kind, str) or kind not in RULE_TYPES
-                or not isinstance(column, str) or column not in columns):
+        if (
+            not isinstance(kind, str)
+            or kind not in RULE_TYPES
+            or not isinstance(column, str)
+            or column not in columns
+        ):
             raise AssistantError("La regla usa una operación o columna desconocida.")
         if not isinstance(params, dict):
             raise AssistantError("Los parámetros de la regla deben ser un objeto.")
@@ -302,8 +320,11 @@ def _validate_instruction(instruction: object) -> str:
 
 def _validate_params(kind: str, params: dict) -> None:
     expected = {
-        "rename": {"to"}, "cast": {"to"}, "map": {"values"},
-        "domain": {"allowed"}, "filter": {"equals"},
+        "rename": {"to"},
+        "cast": {"to"},
+        "map": {"values"},
+        "domain": {"allowed"},
+        "filter": {"equals"},
     }[kind]
     if set(params) != expected:
         raise AssistantError(f"Parámetros inválidos para la operación {kind}.")
@@ -313,14 +334,20 @@ def _validate_params(kind: str, params: dict) -> None:
         raise AssistantError("La conversión solo admite number o text.")
     if kind == "map":
         values = params["values"]
-        if (not isinstance(values, dict) or len(values) > 50
-                or not all(_short_text(k, 200) and _short_text(v, 200)
-                           for k, v in values.items())):
+        if (
+            not isinstance(values, dict)
+            or len(values) > 50
+            or not all(_short_text(k, 200) and _short_text(v, 200) for k, v in values.items())
+        ):
             raise AssistantError("El mapa debe usar hasta 50 pares de texto explícitos.")
     if kind == "domain":
         values = params["allowed"]
-        if (not isinstance(values, list) or not values or len(values) > 100
-                or not all(_short_text(value, 200) for value in values)):
+        if (
+            not isinstance(values, list)
+            or not values
+            or len(values) > 100
+            or not all(_short_text(value, 200) for value in values)
+        ):
             raise AssistantError("El dominio debe contener entre 1 y 100 valores de texto.")
     if kind == "filter" and not _short_text(params["equals"], 200):
         raise AssistantError("El filtro requiere un valor de texto de hasta 200 caracteres.")
@@ -342,23 +369,29 @@ def apply_as_new_version(
         if base is None:
             raise AssistantError("El modelo no existe.")
         name, _version = base
-        new_version = int(conn.execute(
-            "SELECT COALESCE(MAX(version), 0) + 1 FROM models WHERE name = ?", (name,)
-        ).fetchone()[0])
+        new_version = int(
+            conn.execute(
+                "SELECT COALESCE(MAX(version), 0) + 1 FROM models WHERE name = ?", (name,)
+            ).fetchone()[0]
+        )
         at = time.time() if now is None else now
-        new_id = int(conn.execute(
-            "INSERT INTO models (name, version, created_at) VALUES (?,?,?)",
-            (name, new_version, at),
-        ).lastrowid)
+        new_id = int(
+            conn.execute(
+                "INSERT INTO models (name, version, created_at) VALUES (?,?,?)",
+                (name, new_version, at),
+            ).lastrowid
+        )
         entity_ids: dict[int, int] = {}
         for entity_id, entity_name in conn.execute(
             "SELECT entity_id, name FROM entities WHERE model_id = ? ORDER BY entity_id",
             (model_id,),
         ).fetchall():
-            entity_ids[entity_id] = int(conn.execute(
-                "INSERT INTO entities (model_id, name) VALUES (?,?)",
-                (new_id, entity_name),
-            ).lastrowid)
+            entity_ids[entity_id] = int(
+                conn.execute(
+                    "INSERT INTO entities (model_id, name) VALUES (?,?)",
+                    (new_id, entity_name),
+                ).lastrowid
+            )
         for old_id, new_entity_id in entity_ids.items():
             conn.execute(
                 "INSERT INTO attributes (entity_id, name, type, nullable) "
@@ -373,20 +406,29 @@ def apply_as_new_version(
         conn.execute(
             "INSERT INTO rules (model_id, name, type, column, params, position) "
             "SELECT ?, name, type, column, params, position FROM rules "
-            "WHERE model_id = ? ORDER BY position, rule_id", (new_id, model_id),
+            "WHERE model_id = ? ORDER BY position, rule_id",
+            (new_id, model_id),
         )
         conn.execute(
             "INSERT INTO joins (model_id, name, left_ref, right_ref, on_pairs, type, position) "
             "SELECT ?, name, left_ref, right_ref, on_pairs, type, position FROM joins "
-            "WHERE model_id = ? ORDER BY position, join_id", (new_id, model_id),
+            "WHERE model_id = ? ORDER BY position, join_id",
+            (new_id, model_id),
         )
-        existing = {row[0] for row in conn.execute(
-            "SELECT name FROM rules WHERE model_id = ?", (new_id,)
-        ).fetchall()}
-        columns = {row[0] for row in conn.execute(
-            "SELECT a.name FROM attributes a JOIN entities e ON e.entity_id = a.entity_id "
-            "WHERE e.model_id = ?", (new_id,),
-        ).fetchall()}
+        existing = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM rules WHERE model_id = ?", (new_id,)
+            ).fetchall()
+        }
+        columns = {
+            row[0]
+            for row in conn.execute(
+                "SELECT a.name FROM attributes a JOIN entities e ON e.entity_id = a.entity_id "
+                "WHERE e.model_id = ?",
+                (new_id,),
+            ).fetchall()
+        }
         validated = validate_proposal(
             {"summary": "accepted", "rules": proposals},
             [{"name": column} for column in columns],
@@ -394,9 +436,11 @@ def apply_as_new_version(
         proposals = validated["rules"]
         if not proposals:
             raise AssistantError("No hay reglas que aplicar.")
-        position = int(conn.execute(
-            "SELECT COALESCE(MAX(position), -1) + 1 FROM rules WHERE model_id = ?", (new_id,)
-        ).fetchone()[0])
+        position = int(
+            conn.execute(
+                "SELECT COALESCE(MAX(position), -1) + 1 FROM rules WHERE model_id = ?", (new_id,)
+            ).fetchone()[0]
+        )
         for rule in proposals:
             if rule["name"] in existing or rule["column"] not in columns:
                 raise AssistantError("La regla ya existe o usa una columna ajena al modelo.")
@@ -405,8 +449,14 @@ def apply_as_new_version(
             conn.execute(
                 "INSERT INTO rules (model_id, name, type, column, params, position) "
                 "VALUES (?,?,?,?,?,?)",
-                (new_id, rule["name"], rule["type"], rule["column"],
-                 json.dumps(rule["params"], ensure_ascii=False), position),
+                (
+                    new_id,
+                    rule["name"],
+                    rule["type"],
+                    rule["column"],
+                    json.dumps(rule["params"], ensure_ascii=False),
+                    position,
+                ),
             )
             existing.add(rule["name"])
             position += 1

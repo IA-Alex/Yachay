@@ -62,7 +62,9 @@ class RunsApiTests(unittest.TestCase):
     def _upload(self, name: str, content: str):
         data = content.encode("utf-8")
         return self.call(
-            "POST", f"/v1/inputs?name={name}", body=data,
+            "POST",
+            f"/v1/inputs?name={name}",
+            body=data,
             headers={"Content-Length": str(len(data))},
         )
 
@@ -74,12 +76,43 @@ class RunsApiTests(unittest.TestCase):
         self._upload("datos.csv", "id,valor\n1,a\n2,b\n")
         model_id = self._model()
 
-        status, payload = self.call(
-            "POST", f"/v1/models/{model_id}/runs?source=datos.csv"
-        )
+        status, payload = self.call("POST", f"/v1/models/{model_id}/runs?source=datos.csv")
 
         self.assertEqual(status, 201)
         self.assertEqual(payload["data"]["rows_out"], 2)
+
+    def test_run_source_count_duplicates_and_unsafe_names_are_rejected(self):
+        self._upload("datos.csv", "id\n1\n")
+        model_id = self._model()
+        status, _ = self.call(
+            "POST", f"/v1/models/{model_id}/runs?" + "&".join("source=x.csv" for _ in range(21))
+        )
+        self.assertEqual(status, 400)
+        status, _ = self.call("POST", f"/v1/models/{model_id}/runs?source=x.csv&source=x.csv")
+        self.assertEqual(status, 400)
+        status, _ = self.call("POST", f"/v1/models/{model_id}/runs?source=../x.csv")
+        self.assertEqual(status, 400)
+
+    def test_multiple_sources_require_compatible_columns_and_record_lineage(self):
+        self._upload("a.csv", "id,value\n1,a\n")
+        self._upload("b.csv", "other,value\n2,b\n")
+        model_id = self._model("a.csv")
+        status, _ = self.call("POST", f"/v1/models/{model_id}/runs?source=a.csv&source=b.csv")
+        self.assertEqual(status, 400)
+
+        self._upload("c.csv", "id,value\n2,b\n")
+        status, payload = self.call("POST", f"/v1/models/{model_id}/runs?source=a.csv&source=c.csv")
+        self.assertEqual(status, 201)
+        from motor.model.run import get
+        from motor.storage.db import connect
+
+        conn = connect(self.config.paths.sqlite_path)
+        try:
+            record = get(conn, payload["data"]["run_id"])
+        finally:
+            conn.close()
+        self.assertEqual(record.lineage["operation"], "append")
+        self.assertEqual(len(record.lineage["sources"]), 2)
 
     def test_execution_report_is_generated_and_deleted_without_deleting_data(self):
         self._upload("datos.csv", "id,valor\n1,a\n2,b\n")
@@ -88,22 +121,17 @@ class RunsApiTests(unittest.TestCase):
         run_id = result["data"]["run_id"]
         report = self.config.paths.model_outputs / f"report-{run_id}.html"
 
-        status, generated = self.call(
-            "POST", f"/v1/models/{model_id}/runs/{run_id}/report"
-        )
+        status, generated = self.call("POST", f"/v1/models/{model_id}/runs/{run_id}/report")
         self.assertEqual(status, 200)
         self.assertTrue(generated["data"]["generated"])
         self.assertTrue(report.is_file())
         self.assertIn("Informe local", report.read_text())
 
-        status, deleted = self.call(
-            "DELETE", f"/v1/models/{model_id}/runs/{run_id}/report"
-        )
+        status, deleted = self.call("DELETE", f"/v1/models/{model_id}/runs/{run_id}/report")
         self.assertEqual(status, 200)
         self.assertTrue(deleted["data"]["deleted"])
         self.assertFalse(report.exists())
-        self.assertEqual(len(self.call("GET", f"/v1/models/{model_id}/runs")[1]
-                             ["data"]["runs"]), 1)
+        self.assertEqual(len(self.call("GET", f"/v1/models/{model_id}/runs")[1]["data"]["runs"]), 1)
 
     def test_report_generation_rejects_old_runs_without_output_artifacts(self):
         from motor.storage.db import connect
@@ -112,8 +140,9 @@ class RunsApiTests(unittest.TestCase):
         model_id = self._model()
         _, result = self.call("POST", f"/v1/models/{model_id}/runs?source=datos.csv")
         conn = connect(self.config.paths.sqlite_path)
-        conn.execute("UPDATE runs SET artifact_path = NULL WHERE run_id = ?",
-                     (result["data"]["run_id"],))
+        conn.execute(
+            "UPDATE runs SET artifact_path = NULL WHERE run_id = ?", (result["data"]["run_id"],)
+        )
         conn.close()
         status, response = self.call(
             "POST", f"/v1/models/{model_id}/runs/{result['data']['run_id']}/report"
@@ -134,8 +163,9 @@ class RunsApiTests(unittest.TestCase):
         status, _ = self.call("POST", f"/v1/models/{model_id}/runs/{run_id}/report")
         self.assertEqual(status, 409)
         conn = connect(self.config.paths.sqlite_path)
-        conn.execute("UPDATE runs SET artifact_path = 'missing.parquet' WHERE run_id = ?",
-                     (run_id,))
+        conn.execute(
+            "UPDATE runs SET artifact_path = 'missing.parquet' WHERE run_id = ?", (run_id,)
+        )
         conn.close()
         status, _ = self.call("POST", f"/v1/models/{model_id}/runs/{run_id}/report")
         self.assertEqual(status, 409)
@@ -182,9 +212,7 @@ class RunsApiTests(unittest.TestCase):
             return original(path, *args, **kwargs)
 
         with patch.object(Path, "unlink", fail_report):
-            status, response = self.call(
-                "DELETE", f"/v1/models/{model_id}/runs/{run_id}/report"
-            )
+            status, response = self.call("DELETE", f"/v1/models/{model_id}/runs/{run_id}/report")
         self.assertEqual(status, 503)
         self.assertEqual(response["error"]["code"], "unavailable")
 
@@ -194,8 +222,7 @@ class RunsApiTests(unittest.TestCase):
             ("{", {"Content-Type": "application/json"}),
             ('{"proposal":{},"proposal":{}}', {"Content-Type": "application/json"}),
             ("[]", {"Content-Type": "application/json"}),
-            ("[" * 1500 + "0" + "]" * 1500,
-             {"Content-Type": "application/json"}),
+            ("[" * 1500 + "0" + "]" * 1500, {"Content-Type": "application/json"}),
         ]
         for body, headers in cases:
             with self.subTest(body=body, headers=headers):
@@ -213,7 +240,9 @@ class RunsApiTests(unittest.TestCase):
         for path, payload in cases:
             with self.subTest(path=path, payload=payload):
                 status, _ = self.call(
-                    "POST", path, body=json.dumps(payload),
+                    "POST",
+                    path,
+                    body=json.dumps(payload),
                     headers={"Content-Type": "application/json"},
                 )
                 self.assertEqual(status, 400)
@@ -225,7 +254,8 @@ class RunsApiTests(unittest.TestCase):
         model_id = self._model()
         for source, expected in (("missing.csv", 404), ("bad.png", 400), ("otro.csv", 400)):
             status, _ = self.call(
-                "POST", f"/v1/models/{model_id}/assistant/proposals",
+                "POST",
+                f"/v1/models/{model_id}/assistant/proposals",
                 body=json.dumps({"source": source, "instruction": "normaliza"}),
                 headers={"Content-Type": "application/json"},
             )
@@ -236,9 +266,7 @@ class RunsApiTests(unittest.TestCase):
         first = self._model("datos.csv", "uno")
         _, result = self.call("POST", f"/v1/models/{first}/runs?source=datos.csv")
         second = self._model("datos.csv", "dos")
-        status, _ = self.call(
-            "POST", f"/v1/models/{second}/runs/{result['data']['run_id']}/report"
-        )
+        status, _ = self.call("POST", f"/v1/models/{second}/runs/{result['data']['run_id']}/report")
         self.assertEqual(status, 404)
 
     def test_deleting_a_missing_report_returns_not_found(self):
@@ -256,7 +284,9 @@ class RunsApiTests(unittest.TestCase):
         payload = json.dumps({"source": "datos.csv", "instruction": "convierte id a número"})
         with patch.dict(os.environ, {}, clear=True):
             status, response = self.call(
-                "POST", f"/v1/models/{model_id}/assistant/proposals", body=payload,
+                "POST",
+                f"/v1/models/{model_id}/assistant/proposals",
+                body=payload,
                 headers={"Content-Type": "application/json"},
             )
         self.assertEqual(status, 503)
@@ -266,16 +296,25 @@ class RunsApiTests(unittest.TestCase):
     def test_assistant_provider_receives_profile_metadata_without_rows(self):
         self._upload("datos.csv", "id,value\n1,PRIVATE_ROW_VALUE\n")
         model_id = self._model()
-        proposal = {"summary": "Convertir id", "rules": [{
-            "name": "id_number", "type": "cast", "column": "id",
-            "params": {"to": "number"},
-        }]}
+        proposal = {
+            "summary": "Convertir id",
+            "rules": [
+                {
+                    "name": "id_number",
+                    "type": "cast",
+                    "column": "id",
+                    "params": {"to": "number"},
+                }
+            ],
+        }
 
-        with patch.dict(os.environ, {}, clear=True), \
-                patch("motor.assistant.propose_via_gateway",
-                      return_value=proposal) as opened:
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("motor.assistant.propose_via_gateway", return_value=proposal) as opened,
+        ):
             status, response = self.call(
-                "POST", f"/v1/models/{model_id}/assistant/proposals",
+                "POST",
+                f"/v1/models/{model_id}/assistant/proposals",
                 body=json.dumps({"source": "datos.csv", "instruction": "convierte id"}),
                 headers={"Content-Type": "application/json"},
             )
@@ -289,36 +328,54 @@ class RunsApiTests(unittest.TestCase):
     def test_accepting_a_proposal_creates_new_version_without_running_it(self):
         self._upload("datos.csv", "id,value\n1,a\n")
         model_id = self._model()
-        proposal = {"summary": "Convertir id", "rules": [{
-            "name": "id_number", "type": "cast", "column": "id",
-            "params": {"to": "number"},
-        }]}
+        proposal = {
+            "summary": "Convertir id",
+            "rules": [
+                {
+                    "name": "id_number",
+                    "type": "cast",
+                    "column": "id",
+                    "params": {"to": "number"},
+                }
+            ],
+        }
         status, response = self.call(
-            "POST", f"/v1/models/{model_id}/assistant/apply",
+            "POST",
+            f"/v1/models/{model_id}/assistant/apply",
             body=json.dumps({"proposal": proposal}),
             headers={"Content-Type": "application/json"},
         )
         self.assertEqual(status, 201)
         new_id = response["data"]["model_id"]
         self.assertEqual(response["data"]["version"], 2)
-        self.assertEqual(len(self.call("GET", f"/v1/models/{model_id}/runs")[1]
-                             ["data"]["runs"]), 0)
-        self.assertEqual(self.call("GET", f"/v1/models/{new_id}/rules")[1]
-                         ["data"]["rules"][0]["name"], "id_number")
-        self.assertEqual(len(self.call("GET", f"/v1/models/{model_id}/rules")[1]
-                             ["data"]["rules"]), 0)
+        self.assertEqual(len(self.call("GET", f"/v1/models/{model_id}/runs")[1]["data"]["runs"]), 0)
+        self.assertEqual(
+            self.call("GET", f"/v1/models/{new_id}/rules")[1]["data"]["rules"][0]["name"],
+            "id_number",
+        )
+        self.assertEqual(
+            len(self.call("GET", f"/v1/models/{model_id}/rules")[1]["data"]["rules"]), 0
+        )
 
     def test_accepting_from_stale_model_id_clones_latest_version(self):
         self._upload("datos.csv", "id\n1\n")
         model_id = self._model()
 
         def apply(name):
-            proposal = {"summary": "Regla", "rules": [{
-                "name": name, "type": "cast", "column": "id",
-                "params": {"to": "number"},
-            }]}
+            proposal = {
+                "summary": "Regla",
+                "rules": [
+                    {
+                        "name": name,
+                        "type": "cast",
+                        "column": "id",
+                        "params": {"to": "number"},
+                    }
+                ],
+            }
             status, payload = self.call(
-                "POST", f"/v1/models/{model_id}/assistant/apply",
+                "POST",
+                f"/v1/models/{model_id}/assistant/apply",
                 body=json.dumps({"proposal": proposal}),
                 headers={"Content-Type": "application/json"},
             )
@@ -328,24 +385,40 @@ class RunsApiTests(unittest.TestCase):
         first = apply("id_number")
         second = apply("id_text")
         self.assertEqual((first["version"], second["version"]), (2, 3))
-        names = [rule["name"] for rule in self.call(
-            "GET", f"/v1/models/{second['model_id']}/rules"
-        )[1]["data"]["rules"]]
+        names = [
+            rule["name"]
+            for rule in self.call("GET", f"/v1/models/{second['model_id']}/rules")[1]["data"][
+                "rules"
+            ]
+        ]
         self.assertEqual(names, ["id_number", "id_text"])
 
     def test_accepting_invalid_proposal_does_not_create_version(self):
         self._upload("datos.csv", "id\n1\n")
         model_id = self._model()
-        body = {"proposal": {"summary": "invalid", "rules": [{
-            "name": "bad", "type": "execute", "column": "id", "params": {},
-        }]}}
+        body = {
+            "proposal": {
+                "summary": "invalid",
+                "rules": [
+                    {
+                        "name": "bad",
+                        "type": "execute",
+                        "column": "id",
+                        "params": {},
+                    }
+                ],
+            }
+        }
         status, _ = self.call(
-            "POST", f"/v1/models/{model_id}/assistant/apply", body=json.dumps(body),
+            "POST",
+            f"/v1/models/{model_id}/assistant/apply",
+            body=json.dumps(body),
             headers={"Content-Type": "application/json"},
         )
         self.assertEqual(status, 400)
         status, _ = self.call(
-            "POST", f"/v1/models/{model_id}/assistant/apply",
+            "POST",
+            f"/v1/models/{model_id}/assistant/apply",
             body=json.dumps({"proposal": {"summary": "sin reglas", "rules": []}}),
             headers={"Content-Type": "application/json"},
         )
@@ -357,7 +430,9 @@ class RunsApiTests(unittest.TestCase):
         model_id = self._model()
         body = json.dumps({"proposal": {"summary": "x" * 33000, "rules": []}})
         status, response = self.call(
-            "POST", f"/v1/models/{model_id}/assistant/apply", body=body,
+            "POST",
+            f"/v1/models/{model_id}/assistant/apply",
+            body=body,
             headers={"Content-Type": "application/json"},
         )
         self.assertEqual(status, 413)
@@ -383,16 +458,12 @@ class RunsApiTests(unittest.TestCase):
     def test_executing_a_missing_source_is_not_found(self):
         self._upload("datos.csv", "id\n1\n")
         model_id = self._model()
-        status, payload = self.call(
-            "POST", f"/v1/models/{model_id}/runs?source=nada.csv"
-        )
+        status, payload = self.call("POST", f"/v1/models/{model_id}/runs?source=nada.csv")
         self.assertEqual(status, 404)
 
     def test_executing_an_unknown_model_is_not_found(self):
         self._upload("datos.csv", "id\n1\n")
-        status, payload = self.call(
-            "POST", "/v1/models/9999/runs?source=datos.csv"
-        )
+        status, payload = self.call("POST", "/v1/models/9999/runs?source=datos.csv")
         self.assertEqual(status, 404)
 
     def test_diff_of_two_identical_runs_reports_no_change(self):
@@ -450,16 +521,12 @@ class RunsApiTests(unittest.TestCase):
 
     def test_orphans_of_a_missing_file_is_not_found(self):
         self._upload("ventas.csv", "cliente\nana\n")
-        status, payload = self.call(
-            "GET", "/v1/orphans?left=ventas.csv&right=nada.csv&on=cliente"
-        )
+        status, payload = self.call("GET", "/v1/orphans?left=ventas.csv&right=nada.csv&on=cliente")
         self.assertEqual(status, 404)
 
     def test_executing_with_a_non_numeric_model_id_is_bad_request(self):
         self._upload("datos.csv", "id\n1\n")
-        status, payload = self.call(
-            "POST", "/v1/models/abc/runs?source=datos.csv"
-        )
+        status, payload = self.call("POST", "/v1/models/abc/runs?source=datos.csv")
         self.assertEqual(status, 400)
         self.assertEqual(payload["error"]["code"], "bad_request")
 
@@ -467,9 +534,7 @@ class RunsApiTests(unittest.TestCase):
         self._upload("foto.png", "\x89PNG")
         self._upload("datos.csv", "id\n1\n")
         model_id = self._model()
-        status, payload = self.call(
-            "POST", f"/v1/models/{model_id}/runs?source=foto.png"
-        )
+        status, payload = self.call("POST", f"/v1/models/{model_id}/runs?source=foto.png")
         self.assertEqual(status, 400)
 
     def test_executing_with_a_rule_over_a_missing_column_is_a_bad_request(self):
@@ -480,44 +545,33 @@ class RunsApiTests(unittest.TestCase):
         from motor.storage.db import connect
 
         conn = connect(self.config.paths.sqlite_path)
-        rules.add(conn, model_id, name="c", type="cast", column="id",
-                  params={"to": "number"})
+        rules.add(conn, model_id, name="c", type="cast", column="id", params={"to": "number"})
         conn.close()
         self._upload("otro.csv", "otra\n1\n")
-        status, payload = self.call(
-            "POST", f"/v1/models/{model_id}/runs?source=otro.csv"
-        )
+        status, payload = self.call("POST", f"/v1/models/{model_id}/runs?source=otro.csv")
         self.assertEqual(status, 400)
 
     def test_orphans_reject_a_traversal_name(self):
-        status, payload = self.call(
-            "GET", "/v1/orphans?left=../a.csv&right=b.csv&on=x"
-        )
+        status, payload = self.call("GET", "/v1/orphans?left=../a.csv&right=b.csv&on=x")
         self.assertEqual(status, 400)
 
     def test_orphans_with_an_unknown_column_is_a_bad_request(self):
         self._upload("a.csv", "x\n1\n")
         self._upload("b.csv", "y\n1\n")
-        status, payload = self.call(
-            "GET", "/v1/orphans?left=a.csv&right=b.csv&on=no_existe"
-        )
+        status, payload = self.call("GET", "/v1/orphans?left=a.csv&right=b.csv&on=no_existe")
         self.assertEqual(status, 400)
 
     def test_orphans_with_an_unsupported_file_is_a_bad_request(self):
         self._upload("a.csv", "x\n1\n")
         self._upload("foto.png", "\x89PNG")
-        status, payload = self.call(
-            "GET", "/v1/orphans?left=a.csv&right=foto.png&on=x"
-        )
+        status, payload = self.call("GET", "/v1/orphans?left=a.csv&right=foto.png&on=x")
         self.assertEqual(status, 400)
 
     def test_orphans_of_a_file_against_itself(self):
         # Comparar un archivo consigo mismo es un caso legítimo (duplicados
         # internos). No debe filtrar un error de DuckDB ni caer con 500.
         self._upload("a.csv", "k\n1\n2\n")
-        status, payload = self.call(
-            "GET", "/v1/orphans?left=a.csv&right=a.csv&on=k"
-        )
+        status, payload = self.call("GET", "/v1/orphans?left=a.csv&right=a.csv&on=k")
         self.assertEqual(status, 200)
         self.assertEqual(payload["data"]["rows_out"], 0)
 
@@ -529,9 +583,7 @@ class RunsApiTests(unittest.TestCase):
     def test_executing_rejects_a_traversal_source(self):
         self._upload("datos.csv", "id\n1\n")
         model_id = self._model()
-        status, payload = self.call(
-            "POST", f"/v1/models/{model_id}/runs?source=../evil.csv"
-        )
+        status, payload = self.call("POST", f"/v1/models/{model_id}/runs?source=../evil.csv")
         self.assertEqual(status, 400)
 
     def test_executing_a_model_without_entities_is_invalid_state(self):
@@ -542,9 +594,7 @@ class RunsApiTests(unittest.TestCase):
         model_id = store.create(conn, name="vacio")
         conn.close()
         self._upload("datos.csv", "id\n1\n")
-        status, payload = self.call(
-            "POST", f"/v1/models/{model_id}/runs?source=datos.csv"
-        )
+        status, payload = self.call("POST", f"/v1/models/{model_id}/runs?source=datos.csv")
         self.assertEqual(status, 409)
 
 
