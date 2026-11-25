@@ -7,6 +7,7 @@ After=default.target
 
 [Service]
 Type=exec
+Slice=yachay.slice
 # Ruta del proyecto. Ajustar si el repo vive en otro sitio.
 WorkingDirectory=%h/Yachay
 Environment=PYTHONUNBUFFERED=1
@@ -49,9 +50,10 @@ SystemCallArchitectures=native
 ReadWritePaths=%h/Yachay/data
 UMask=0027
 
-# Presupuesto de recursos: perfil NORMAL, valores de arranque, NO calibrados
-# (spec sección 16). No son resultados de rendimiento medidos.
-MemoryMax=8G
+# El presupuesto de memoria es compartido por la API y el worker en yachay.slice.
+# Se repite en la unidad para que DuckDB vea el cgroup límite del propio proceso.
+MemoryHigh=30G
+MemoryMax=35G
 CPUQuota=200%
 CPUWeight=100
 TasksMax=256

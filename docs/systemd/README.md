@@ -11,6 +11,7 @@ y la API una proyección de solo lectura (ADR-016).
 | --- | --- | --- |
 | `motor-worker.service` | `motor run` | Escanea, reclama, reconcilia, publica y recolecta |
 | `motor-api.service` | `motor api` | Sirve la API v1 en un socket Unix |
+| `yachay.slice` | API + worker | Presupuesto de memoria agregado: `MemoryHigh=30G`, `MemoryMax=35G` |
 
 ## Instalar (usuario)
 
@@ -18,9 +19,20 @@ y la API una proyección de solo lectura (ADR-016).
 mkdir -p ~/.config/systemd/user
 cp docs/systemd/motor-worker.service ~/.config/systemd/user/
 cp docs/systemd/motor-api.service ~/.config/systemd/user/
+cp docs/systemd/yachay.slice ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now motor-worker.service motor-api.service
 ```
+
+El slice comparte un máximo de 35 GiB entre los dos servicios. Cada unidad
+repite ese máximo para que DuckDB detecte el presupuesto del cgroup del proceso;
+el slice sigue siendo el límite agregado. El kernel no reserva la memoria:
+queda disponible para el resto del host mientras Yachay no la use. Al superar
+30 GiB, systemd aplica reclaim y presión de memoria; 35 GiB es el límite final.
+Las cuotas de CPU permanecen en 200% para el worker y 100% para la API, por lo
+que este perfil amplía capacidad de memoria, no de CPU. Parte de la memoria de
+Python y ciertos resultados queda fuera del buffer manager de DuckDB. Monitoriza
+los picos de `MemoryPeak` y los eventos OOM antes de aumentar el presupuesto.
 
 ## Adaptador DeepInfra con firewall por UID
 
@@ -69,6 +81,9 @@ siguen siendo necesarios porque las IP de proveedor pueden ser compartidas.
 
 ```bash
 systemctl --user status motor-worker motor-api
+systemctl --user show yachay.slice -p MemoryHigh -p MemoryMax -p EffectiveMemoryHigh -p EffectiveMemoryMax -p MemoryPeak
+systemctl --user show motor-worker.service motor-api.service -p Slice -p MemoryHigh -p MemoryMax -p EffectiveMemoryMax
+systemd-run --user --scope --slice=yachay.slice --property=MemoryHigh=30G --property=MemoryMax=35G -- .venv/bin/python -c 'import duckdb; print(duckdb.connect(":memory:").execute("select current_setting(\x27memory_limit\x27)").fetchone()[0])'
 journalctl -u motor-deepinfra -f
 journalctl -u yachay-deepinfra-firewall -f
 journalctl --user -u motor-worker -f          # log JSON, una línea por ciclo/job
@@ -103,7 +118,9 @@ PYTHONPATH=src .venv/bin/python -m motor api --root .      # API
   adaptador corre como `yachay-net` en una unidad de sistema para que nftables
   pueda aplicar una política de salida por UID. Su instalación necesita root.
 - **Presupuestos de recursos** (`MemoryMax`, `CPUQuota`, …) son del **perfil
-  NORMAL, valores de arranque, NO calibrados** (spec sección 16).
+  local de este host**. `yachay.slice` permite hasta 35 GiB agregados; se
+  verificó que cgroup v2 y DuckDB detectan el límite. La carga de producción y
+  su pico de RSS aún deben medirse con datasets representativos.
 - **Red acotada por UID.** API y worker no tienen red IP; el API elimina la
   credencial del proveedor de su entorno. systemd la monta como credencial
   efímera solo al adaptador. nftables permite TCP/443 a conjuntos de IP DNS con

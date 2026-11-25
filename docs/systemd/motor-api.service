@@ -7,6 +7,7 @@ After=default.target
 
 [Service]
 Type=exec
+Slice=yachay.slice
 WorkingDirectory=%h/Yachay
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONPATH=%h/Yachay/src
@@ -44,7 +45,10 @@ SystemCallArchitectures=native
 ReadWritePaths=%h/Yachay/data
 UMask=0027
 
-MemoryMax=2G
+# El límite del servicio permite que DuckDB detecte el presupuesto local; el
+# slice yachay.slice además limita conjuntamente API + worker a 35 GiB.
+MemoryHigh=30G
+MemoryMax=35G
 CPUQuota=100%
 TasksMax=128
 

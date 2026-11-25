@@ -1,0 +1,10 @@
+[Unit]
+Description=Yachay — presupuesto compartido de memoria de procesamiento
+Documentation=file:///home/panda/Yachay/docs/systemd/README.md
+
+[Slice]
+# El límite es agregado para API + worker. No reserva RAM mientras están ociosos.
+# MemoryHigh inicia reclaim/throttling; MemoryMax es la última barrera ante OOM.
+MemoryAccounting=yes
+MemoryHigh=30G
+MemoryMax=35G
