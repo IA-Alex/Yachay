@@ -50,10 +50,12 @@ código 1 en lugar de fallar con una traza.
 | **Modelo** (`Ctrl+3`) | `GET /v1/models` + `POST /v1/models?name=&source=` | Crear modelo |
 | **Ejecutar** (`Ctrl+4`) | `POST /v1/models/{id}/runs?source=` repetido | Ejecutar con varias fuentes separadas por `;` y ver la huella |
 | **Resultados** (`Ctrl+5`) | `GET /v1/models/{id}/runs` + `GET /v1/diff` | Comparar dos ejecuciones |
-| **Cola de trabajos** (`Ctrl+6`) | `GET /v1/jobs` (filtro por estado) | Cancelar / Reintentar |
-| **Catálogo de datasets** (`Ctrl+7`) | `GET /v1/datasets` | Ver manifest |
+| **Visualizaciones** (`Ctrl+6`) | `GET /v1/models/{id}/runs` + `POST/DELETE /v1/models/{id}/runs/{run_id}/report` | Generar, abrir y borrar el informe local |
+| **Propuestas** (`Ctrl+7`) | `POST /v1/models/{id}/assistant/proposals` + `/assistant/apply` | Revisar reglas propuestas y aceptar una nueva versión |
+| **Cola de trabajos** (`Ctrl+8`) | `GET /v1/jobs` (filtro por estado) | Cancelar / Reintentar |
+| **Catálogo de datasets** (`Ctrl+9`) | `GET /v1/datasets` | Ver manifest |
 
-Siete vistas, en el orden de los atajos. Atajos de teclado: `Ctrl+1..7` cambia de
+Nueve vistas, en el orden de los atajos. Atajos de teclado: `Ctrl+1..9` cambia de
 vista, `Ctrl+R` / `F5` refresca.
 
 El Panel de estado incluye además un resumen de las capacidades del motor:
@@ -107,9 +109,9 @@ desktop/yachay_desktop/
 
 ## Pruebas
 
-`tests/unit/test_desktop_ui.py` cubre la lógica sin depender de un motor vivo:
+`tests/unit/test_desktop_ui.py` cubre la lógica contra un motor temporal:
 formateo, conversión de modelos, el envelope del cliente (con un socket Unix
-falso) y la construcción de las siete vistas. Se ejecuta con el gate del
+falso), recorridos del cliente contra la API local y la construcción de las nueve vistas. Se ejecuta con el gate del
 proyecto (`./scripts/test.sh`).
 
 Las pruebas que necesitan Tk se **omiten** si no hay servidor gráfico

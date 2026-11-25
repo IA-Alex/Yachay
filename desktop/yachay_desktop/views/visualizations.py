@@ -37,11 +37,14 @@ class VisualizationsViewMixin:
                  font=TYPE.font(TYPE.size_base)).pack(side="left", ipady=SPACING.xs)
         make_button(row, "Cargar ejecuciones", self._load_visual_runs,
                     kind="secondary").pack(side="left", padx=SPACING.sm)
-        make_button(row, "Generar informe", self._generate_visual_report,
+
+        actions = tk.Frame(controls.body, background=PALETTE.surface)
+        actions.pack(fill="x", pady=(SPACING.sm, 0))
+        make_button(actions, "Generar informe", self._generate_visual_report,
                     kind="primary").pack(side="left")
-        make_button(row, "Abrir informe", self._open_visual_report,
+        make_button(actions, "Abrir informe", self._open_visual_report,
                     kind="secondary").pack(side="left", padx=SPACING.sm)
-        make_button(row, "Borrar informe", self._delete_visual_report,
+        make_button(actions, "Borrar informe", self._delete_visual_report,
                     kind="danger").pack(side="left")
         self.visual_status = responsive_wrap(tk.Label(
             controls.body, text="", foreground=PALETTE.disabled_text,

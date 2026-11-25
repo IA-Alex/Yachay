@@ -1,14 +1,16 @@
 """Yachay Desktop — ventana principal y vistas.
 
-Siete vistas, todas alimentadas por la API v1 real a través del socket Unix:
+Nueve vistas, todas alimentadas por la API v1 real a través del socket Unix:
 
 1. Panel de estado   → GET /v1/health + conteos derivados de jobs/datasets
 2. Cargar archivo    → POST /v1/inputs + GET /v1/profile
 3. Modelo            → GET/POST /v1/models
 4. Ejecutar          → POST /v1/models/{id}/runs
 5. Resultados        → GET /v1/models/{id}/runs + GET /v1/diff
-6. Cola de trabajos  → GET /v1/jobs (+ cancelar / reintentar)
-7. Catálogo          → GET /v1/datasets (+ detalle del manifest)
+6. Visualizaciones   → POST/DELETE /v1/models/{id}/runs/{run_id}/report
+7. Propuestas        → POST /v1/models/{id}/assistant/{proposals,apply}
+8. Cola de trabajos  → GET /v1/jobs (+ cancelar / reintentar)
+9. Catálogo          → GET /v1/datasets (+ detalle del manifest)
 
 Ninguna vista inventa datos: los estados vacíos son estados vacíos reales.
 """

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+from tkinter import ttk
 
 from ..client import Job
 from ..theme import PALETTE, SPACING, TYPE
@@ -13,6 +14,7 @@ class StatusViewMixin:
 
     def _build_status_view(self, parent: tk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1)
         title = SectionTitle(
             parent,
             "Panel de estado",
@@ -20,6 +22,28 @@ class StatusViewMixin:
         )
         title.grid(row=0, column=0, sticky="ew", pady=(0, SPACING.lg))
         self.titles["status"] = title
+
+        body = tk.Canvas(
+            parent, background=PALETTE.background, highlightthickness=0,
+            yscrollincrement=24,
+        )
+        body.grid(row=1, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(
+            parent, orient="vertical", command=body.yview,
+            style="Yachay.Vertical.TScrollbar",
+        )
+        scrollbar.grid(row=1, column=1, sticky="ns")
+        body.configure(yscrollcommand=scrollbar.set)
+        content = tk.Frame(body, background=PALETTE.background)
+        content_window = body.create_window((0, 0), window=content, anchor="nw")
+
+        def _fit_content(event=None) -> None:
+            if event is not None:
+                body.itemconfigure(content_window, width=event.width)
+            body.configure(scrollregion=body.bbox("all"))
+
+        content.bind("<Configure>", _fit_content, add="+")
+        body.bind("<Configure>", _fit_content, add="+")
 
         self.toggle_button = make_button(
             title.actions,
@@ -32,8 +56,8 @@ class StatusViewMixin:
             side="right", padx=(0, SPACING.sm)
         )
 
-        card = Card(parent)
-        card.grid(row=1, column=0, sticky="ew")
+        card = Card(content)
+        card.grid(row=0, column=0, sticky="ew")
         self.status_body = card.body
 
         self._build_status_metrics(self.status_body)
@@ -41,8 +65,8 @@ class StatusViewMixin:
         status_note = tk.Label(
             self.status_body,
             text=(
-                "La interfaz solo lee el estado. No reconcilia, no reclama leases "
-                "y no ejecuta el pipeline: esas son tareas exclusivas del worker."
+                "Solo consulta el estado. La reconciliación y la ejecución son "
+                "tareas del worker."
             ),
             foreground=PALETTE.disabled_text,
             background=PALETTE.surface,
@@ -52,7 +76,7 @@ class StatusViewMixin:
         )
         responsive_wrap(status_note).pack(anchor="w", pady=(SPACING.lg, 0), fill="x")
 
-        self._build_function_catalog(parent)
+        self._build_function_catalog(content)
 
     def _build_status_metrics(self, parent: tk.Frame) -> None:
         """Construye las métricas y sus textos interpretativos."""

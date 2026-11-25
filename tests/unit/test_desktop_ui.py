@@ -3,7 +3,7 @@
 Verifican que la aplicación se construye y que su lógica respeta el contrato del
 motor, sin depender de un servidor X ni de un motor en ejecución:
 
-- las siete vistas se construyen y navegan sin error;
+- las nueve vistas se construyen y navegan sin error;
 - los botones de acción se habilitan según CANCELLABLE_STATES / RETRYABLE_STATES;
 - el cliente habla el envelope real y ramifica por el código de error;
 - el formateo de fechas, identificadores y tamaños es correcto.
@@ -845,7 +845,7 @@ class AppSmokeTests(unittest.TestCase):
 
     def test_navigating_every_view_does_not_raise(self):
         for name in ("status", "files", "model", "execute", "results",
-                     "jobs", "datasets"):
+                     "visualizations", "assistant", "jobs", "datasets"):
             self.app.show_view(name)
             self.app.update()
 
