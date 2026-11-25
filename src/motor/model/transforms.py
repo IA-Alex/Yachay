@@ -44,7 +44,8 @@ def derive_column(table: Table, *, name: str, expression: str) -> Table:
         if not replaced:
             select.append(f"({sql}) AS {_ident(name)}")
         try:
-            return _as_table(con, f"SELECT {', '.join(select)} FROM {_ident('t')}")
+            query = f"SELECT {', '.join(select)} FROM {_ident('t')}"
+            return _as_table(con, f"({query}) AS {_ident('derived')}")
         except duckdb.Error as exc:
             raise TransformError("la expresión no se pudo evaluar sobre estos datos") from exc
     finally:
@@ -98,7 +99,8 @@ def aggregate_table(table: Table, *, by: list[str], metrics: list[dict]) -> Tabl
     con = duckdb.connect(":memory:")
     try:
         _load(con, table)
-        return _as_table(con, f"SELECT {', '.join(selections)} FROM {_ident('t')}{group}{order}")
+        query = f"SELECT {', '.join(selections)} FROM {_ident('t')}{group}{order}"
+        return _as_table(con, f"({query}) AS {_ident('aggregate')}")
     except duckdb.Error as exc:
         raise TransformError("no se pudo calcular la agregación") from exc
     finally:

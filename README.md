@@ -29,9 +29,11 @@ El reencuadre a **motor de modelado** (ADR-019) está entregado en M1–M6:
 perfilado, modelo con entidades y claves, reglas de transformación, cruces,
 ejecuciones versionadas, diff y vistas de modelo/resultados. ADR-021 amplía ese
 baseline con funciones nativas locales de alineación de esquemas, calidad,
-transformación y exportación, por etapas. El tracker distingue las capacidades
-entregadas de las pendientes. La implementación de esas acciones ya está en la
-CLI; queda pendiente su validación funcional.
+transformación y exportación, por etapas. T-024–T-033 pasaron una aceptación
+funcional CLI con fixtures temporales y reconciliación independiente; ver
+`audit/validacion-T022-2026-11-24.md`. El gate de pruebas unitarias no presenta
+fallos, pero su umbral de cobertura global aún falla (80% frente a 100%); está
+registrado como T-035.
 
 La asistencia usa DeepInfra desde un adaptador aislado y solo envía instrucción,
 nombres de columna y estadísticas del perfil; nunca filas. La API local no recibe

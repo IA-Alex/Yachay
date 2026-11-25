@@ -127,7 +127,9 @@ class RunStoreTests(unittest.TestCase):
     def test_describe_lineage_without_a_table_omits_types(self):
         """Sin tabla solo se describe el origen; no se inventan tipos."""
         payload = run.describe_lineage(output="m")
-        self.assertEqual(payload, {"output": "m", "rules": []})
+        self.assertEqual(payload["output"], "m")
+        self.assertEqual(payload["rules"], [])
+        self.assertTrue(payload["engine_version"])
         self.assertNotIn("types", payload)
 
     def test_record_persists_private_parquet_and_source_metadata(self):
