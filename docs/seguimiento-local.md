@@ -41,7 +41,7 @@ un contrato cerrado.
 | T-031 | Implementación añadida; validación pendiente | Formatos de fecha y número por fuente | `model transform` normaliza solo columnas y formatos declarados; informa errores sin adivinar |
 | T-032 | Implementación añadida; validación pendiente | Ejecución incremental | CLI `model incremental` transforma un delta, alinea columnas, reemplaza por clave y exige misma versión del modelo |
 | T-033 | Implementación añadida; validación pendiente | Metadatos de reproducibilidad | Ejecuciones nuevas registran versión de modelo/motor, fuentes y SHA-256, parámetros y huella; sin linaje empresarial |
-| T-034 | Implementada; validación pendiente | Aislar la salida de DeepInfra | Adaptador dedicado sobre AF_UNIX; API/worker sin clave ni red IP; destino TLS fijado, solo metadatos de perfil; ADR-022 |
+| T-034 | Implementada; validación local aprobada; despliegue de host pendiente | Aislar la salida de DeepInfra | Adaptador con UID dedicado, firewall nftables por UID/IP/puerto, refresco DNS y fail-closed; API/worker sin clave ni red IP; ADR-022 |
 
 ## Decisiones
 

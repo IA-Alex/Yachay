@@ -153,9 +153,11 @@ excepción de salida a Internet es el adaptador aislado para asistencia:
   ventana se comunica con ellos por el socket Unix `data/motor.sock` (modo
   `0660`). API y worker no tienen red IP; `YACHAY_API_TOKEN` añade autenticación
   Bearer cuando se configura (ADR-016).
-- **La asistencia sale por una frontera aparte.** `motor-deepinfra` no acepta
-  TCP, recibe solo propuestas por AF_UNIX, no puede leer `data/` y conecta por
-  TLS al host fijo de DeepInfra. El API no posee la clave ni acceso de red.
+- **La asistencia sale por una frontera aparte.** `motor-deepinfra` corre con
+  UID `yachay-net`, no acepta TCP y recibe propuestas por AF_UNIX. nftables
+  restringe su salida a TCP/443 hacia las IP DNS refrescadas para DeepInfra; el
+  proceso usa una lista corta con caducidad y no hace DNS. No puede leer
+  `data/`; el API no posee la clave ni acceso de red.
 - **Dos planos internos del motor**, separados por una frontera real:
   - El **plano de ingesta** (`worker.py` + `ingestion/` + `pipelines/` +
     `publishing/`) mueve bytes del disco a Parquet. No conoce el "modelo del

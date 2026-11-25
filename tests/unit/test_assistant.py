@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -43,7 +44,7 @@ class AssistantValidationTests(unittest.TestCase):
 
     def test_requires_key_and_rejects_oversized_schema(self):
         with patch.dict(os.environ, {}, clear=True):
-            with self.assertRaisesRegex(assistant.AssistantError, "DEEPINFRA_API_KEY"):
+            with self.assertRaisesRegex(assistant.AssistantError, "credencial"):
                 assistant.propose("limpia amount", self.schema)
         with patch.dict(os.environ, {"DEEPINFRA_API_KEY": "local-test"}):
             with self.assertRaisesRegex(assistant.AssistantError, "128 columnas"):
@@ -178,6 +179,29 @@ class AssistantProviderTests(unittest.TestCase):
                 patch("motor.assistant._PinnedHTTPSConnection", return_value=connection):
             with self.assertRaisesRegex(assistant.AssistantError, "límite"):
                 assistant.propose("ordena", self.schema)
+
+    def test_provider_ip_file_is_validated_and_expires(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "provider-ips.json"
+            good = {
+                "host": "api.deepinfra.com",
+                "addresses": ["8.8.8.8"],
+                "refreshed_at": time.time(),
+            }
+            path.write_text(json.dumps(good), encoding="utf-8")
+            with patch.dict(os.environ, {"YACHAY_DEEPINFRA_IPS_FILE": str(path)}):
+                self.assertEqual(assistant._provider_addresses("api.deepinfra.com"), ["8.8.8.8"])
+                for addresses, refreshed_at in (
+                    (["127.0.0.1"], time.time()),
+                    (["8.8.8.8"], time.time() - 181),
+                ):
+                    path.write_text(json.dumps({
+                        "host": "api.deepinfra.com",
+                        "addresses": addresses,
+                        "refreshed_at": refreshed_at,
+                    }), encoding="utf-8")
+                    with self.assertRaises(assistant.AssistantError):
+                        assistant._provider_addresses("api.deepinfra.com")
 
     @property
     def schema(self):

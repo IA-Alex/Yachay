@@ -1,18 +1,23 @@
 [Unit]
 Description=Yachay — adaptador aislado de propuestas DeepInfra
 Documentation=file:///home/panda/Yachay/docs/systemd/README.md
-After=default.target
+Requires=yachay-deepinfra-firewall.service
+After=network-online.target yachay-deepinfra-firewall.service
+Wants=network-online.target
 
 [Service]
 Type=exec
+User=yachay-net
+Group=panda
 WorkingDirectory=/
 Environment=PYTHONUNBUFFERED=1
-Environment=PYTHONPATH=%h/Yachay/src
-Environment=YACHAY_DEEPINFRA_SOCKET=%t/motor-deepinfra/deepinfra.sock
-LoadCredential=deepinfra_api_key:%h/.config/yachay/deepinfra-api-key
-RuntimeDirectory=motor-deepinfra
+Environment=PYTHONPATH=/home/panda/Yachay/src
+Environment=YACHAY_DEEPINFRA_SOCKET=/run/yachay-deepinfra/deepinfra.sock
+Environment=YACHAY_DEEPINFRA_IPS_FILE=/run/yachay-deepinfra-firewall/provider-ips.json
+LoadCredential=deepinfra_api_key:/home/panda/.config/yachay/deepinfra-api-key
+RuntimeDirectory=yachay-deepinfra
 RuntimeDirectoryMode=0750
-ExecStart=%h/Yachay/.venv/bin/python -m motor deepinfra
+ExecStart=/home/panda/Yachay/.venv/bin/python -m motor deepinfra
 
 Restart=on-failure
 RestartSec=3
@@ -24,7 +29,8 @@ TimeoutStopSec=20
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=tmpfs
-BindReadOnlyPaths=%h/Yachay/src %h/Yachay/.venv
+BindReadOnlyPaths=/home/panda/Yachay/src /home/panda/Yachay/.venv
+ReadOnlyPaths=/run/yachay-deepinfra-firewall
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
@@ -35,8 +41,8 @@ LockPersonality=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 CapabilityBoundingSet=
 SystemCallArchitectures=native
-ReadWritePaths=%t/motor-deepinfra
-UMask=0027
+ReadWritePaths=/run/yachay-deepinfra
+UMask=0007
 
 MemoryMax=512M
 CPUQuota=50%
@@ -46,4 +52,4 @@ StandardOutput=journal
 StandardError=journal
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target

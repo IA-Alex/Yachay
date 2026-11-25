@@ -1,0 +1,2 @@
+# Static service UID lets nftables match the adapter by meta skuid.
+u yachay-net - "Yachay DeepInfra network adapter" /nonexistent

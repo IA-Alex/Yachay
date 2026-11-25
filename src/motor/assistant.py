@@ -24,6 +24,8 @@ _GATEWAY_TIMEOUT = 20
 _GATEWAY_MAX_RESPONSE = 64 * 1024
 _PROVIDER_HOST = "api.deepinfra.com"
 _PROVIDER_PATH = "/v1/openai/chat/completions"
+_PROVIDER_IPS_MAX_AGE = 180
+_PROVIDER_IPS_MAX_COUNT = 32
 _PROFILE_FIELDS = {
     "name", "rows", "nulls", "unique", "duplicates", "inferred_type",
     "numeric_min", "numeric_max",
@@ -35,12 +37,7 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
 
     def connect(self) -> None:
         try:
-            answers = socket.getaddrinfo(
-                self.host, self.port, type=socket.SOCK_STREAM
-            )
-            addresses = list(dict.fromkeys(item[4][0] for item in answers))
-            if not addresses or any(not ipaddress.ip_address(ip).is_global for ip in addresses):
-                raise OSError("DNS returned a non-public address")
+            addresses = _provider_addresses(self.host)
             last_error = None
             for address in addresses:
                 raw = None
@@ -59,6 +56,49 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
             raise AssistantError(
                 "No se pudo establecer una conexión segura con DeepInfra."
             ) from exc
+
+
+def _provider_addresses(host: str) -> list[str]:
+    """Use root-refreshed IPs in the system service; resolve only in dev mode."""
+    configured = os.environ.get("YACHAY_DEEPINFRA_IPS_FILE")
+    if configured:
+        try:
+            path = Path(configured)
+            if time.time() - path.stat().st_mtime > _PROVIDER_IPS_MAX_AGE:
+                raise ValueError("provider address list expired")
+            value = json.loads(path.read_text(encoding="utf-8"))
+            if (
+                not isinstance(value, dict)
+                or set(value) != {"host", "addresses", "refreshed_at"}
+                or value["host"] != host
+                or not isinstance(value["addresses"], list)
+                or not 1 <= len(value["addresses"]) <= _PROVIDER_IPS_MAX_COUNT
+                or type(value["refreshed_at"]) not in (int, float)
+                or not math.isfinite(value["refreshed_at"])
+                or value["refreshed_at"] > time.time() + 30
+                or time.time() - value["refreshed_at"] > _PROVIDER_IPS_MAX_AGE
+            ):
+                raise ValueError("invalid provider address list")
+            addresses = list(dict.fromkeys(value["addresses"]))
+            if any(not ipaddress.ip_address(item).is_global for item in addresses):
+                raise ValueError("provider address is not public")
+            return addresses
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+            raise AssistantError(
+                "La lista segura de direcciones de DeepInfra no está vigente."
+            ) from exc
+    try:
+        answers = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+        addresses = list(dict.fromkeys(item[4][0] for item in answers))
+        if not addresses or any(
+            not ipaddress.ip_address(ip).is_global for ip in addresses
+        ):
+            raise OSError("DNS returned a non-public address")
+        return addresses
+    except (ValueError, OSError) as exc:
+        raise AssistantError(
+            "No se pudo establecer una conexión segura con DeepInfra."
+        ) from exc
 
 
 class AssistantError(Exception):

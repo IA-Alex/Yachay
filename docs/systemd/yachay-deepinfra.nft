@@ -1,0 +1,21 @@
+table inet yachay_deepinfra {
+    set provider_v4 {
+        type ipv4_addr
+        flags timeout
+        timeout 180s
+    }
+
+    set provider_v6 {
+        type ipv6_addr
+        flags timeout
+        timeout 180s
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+
+        meta skuid yachay-net ip daddr @provider_v4 tcp dport 443 accept
+        meta skuid yachay-net ip6 daddr @provider_v6 tcp dport 443 accept
+        meta skuid yachay-net reject
+    }
+}

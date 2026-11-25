@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh the Yachay DeepInfra destination allowlist
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=60s
+AccuracySec=5s
+Unit=yachay-deepinfra-firewall.service
+
+[Install]
+WantedBy=timers.target

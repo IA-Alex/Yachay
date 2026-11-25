@@ -11,7 +11,6 @@ y la API una proyección de solo lectura (ADR-016).
 | --- | --- | --- |
 | `motor-worker.service` | `motor run` | Escanea, reclama, reconcilia, publica y recolecta |
 | `motor-api.service` | `motor api` | Sirve la API v1 en un socket Unix |
-| `motor-deepinfra.service` | `motor deepinfra` | Adaptador de salida limitado a propuestas de DeepInfra |
 
 ## Instalar (usuario)
 
@@ -19,19 +18,59 @@ y la API una proyección de solo lectura (ADR-016).
 mkdir -p ~/.config/systemd/user
 cp docs/systemd/motor-worker.service ~/.config/systemd/user/
 cp docs/systemd/motor-api.service ~/.config/systemd/user/
-cp docs/systemd/motor-deepinfra.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now motor-worker.service motor-api.service
+```
+
+## Adaptador DeepInfra con firewall por UID
+
+El adaptador es una **unidad de sistema** con UID exclusivo `yachay-net`. No
+abre puertos entrantes ni resuelve DNS desde su proceso. nftables permite solo
+TCP 443 hacia las IP públicas que el refrescador de DNS guarda para
+`api.deepinfra.com`; rechaza el resto de la salida de ese UID. Las IP caducan a
+los 180 segundos y se refrescan cada 60; si el refresco falla, la asistencia
+falla cerrada. La API y el worker conservan su aislamiento actual.
+
+No instales esta regla sobre un firewall activo de UFW/firewalld ni sobre un
+servicio nftables que recargue todo el ruleset sin integrarla primero. El diseño
+añade una tabla propia y no ejecuta `flush ruleset`, pero la recarga de otro
+administrador podría borrar esa tabla.
+
+```bash
+# Crear el secreto como panda; no pegarlo en el chat ni en comandos con historial.
 install -d -m 700 ~/.config/yachay
 install -m 600 /dev/null ~/.config/yachay/deepinfra-api-key
-# Guardar solo el token en ~/.config/yachay/deepinfra-api-key (modo 600)
+# Guardar solo el token en ese archivo.
+
+# Como root, una vez confirmado que no hay otro gestor de firewall activo:
+apt install nftables
+install -D -m 644 docs/systemd/yachay-deepinfra.sysusers /etc/sysusers.d/yachay-deepinfra.conf
+systemd-sysusers /etc/sysusers.d/yachay-deepinfra.conf
+install -D -m 644 docs/systemd/yachay-deepinfra.nft /etc/yachay-deepinfra.nft
+install -D -m 644 scripts/deepinfra_firewall_refresh.py /usr/local/libexec/yachay-deepinfra-firewall-refresh
+install -D -m 644 docs/systemd/yachay-deepinfra-firewall.service /etc/systemd/system/yachay-deepinfra-firewall.service
+install -D -m 644 docs/systemd/yachay-deepinfra-firewall.timer /etc/systemd/system/yachay-deepinfra-firewall.timer
+install -D -m 644 docs/systemd/motor-deepinfra.service /etc/systemd/system/motor-deepinfra.service
+systemctl daemon-reload
+systemctl enable --now yachay-deepinfra-firewall.timer motor-deepinfra.service
+
+# Como panda, publicar el socket usado por la API.
+install -D -m 644 docs/systemd/motor-api.service ~/.config/systemd/user/motor-api.service
 systemctl --user daemon-reload
-systemctl --user enable --now motor-worker.service motor-deepinfra.service motor-api.service
+systemctl --user restart motor-api.service
 ```
+
+Las rutas `/home/panda/Yachay` y `/home/panda/.config/...` de la unidad de
+sistema deben ajustarse si el usuario o la ubicación del checkout son distintos.
+La tabla nftables limita UID, IP y puerto; la validación TLS y el host HTTP fijo
+siguen siendo necesarios porque las IP de proveedor pueden ser compartidas.
 
 ## Verificar
 
 ```bash
 systemctl --user status motor-worker motor-api
-journalctl --user -u motor-deepinfra -f
+journalctl -u motor-deepinfra -f
+journalctl -u yachay-deepinfra-firewall -f
 journalctl --user -u motor-worker -f          # log JSON, una línea por ciclo/job
 ls -l "$XDG_RUNTIME_DIR/motor/motor.sock"     # srw-rw---- (modo 660)
 curl --unix-socket "$XDG_RUNTIME_DIR/motor/motor.sock" http://localhost/v1/health
@@ -60,18 +99,16 @@ PYTHONPATH=src .venv/bin/python -m motor api --root .      # API
 - **`Type=exec`, sin `WatchdogSec`.** El pipeline es de un solo disparo y no hay
   fronteras de lote donde latir; un watchdog mataría CSVs lentamente legítimos y,
   con `MAX_ATTEMPTS=3`, los volvería fallos deterministas. Cablearlo es **T-013**.
-- **Sin usuario `motor` ni `/opt`.** Las unidades son de usuario y corren como el
-  operador. Una variante de sistema con usuario dedicado requiere root y queda
-  documentada, no ejecutada.
+- **Identidad separada para red.** API y worker son unidades de usuario. El
+  adaptador corre como `yachay-net` en una unidad de sistema para que nftables
+  pueda aplicar una política de salida por UID. Su instalación necesita root.
 - **Presupuestos de recursos** (`MemoryMax`, `CPUQuota`, …) son del **perfil
   NORMAL, valores de arranque, NO calibrados** (spec sección 16).
-- **Red acotada por proceso.** Worker y API no tienen red IP; el API elimina
-  la credencial del proveedor de su entorno. systemd la monta como credencial
-  efímera solo para `motor-deepinfra`. Solo ese proceso puede abrir salida IP,
-  no escucha TCP, recibe solicitudes por socket Unix y su código fija el destino
-  HTTPS a `api.deepinfra.com`. Su vista de archivos expone `src/` y `.venv/`,
-  ambos de solo lectura. El filtro por hostname se aplica en la
-  aplicación; un firewall/egress proxy del host sigue siendo necesario si se
-  requiere una restricción de destino también a nivel de red.
+- **Red acotada por UID.** API y worker no tienen red IP; el API elimina la
+  credencial del proveedor de su entorno. systemd la monta como credencial
+  efímera solo al adaptador. nftables permite TCP/443 a conjuntos de IP DNS con
+  caducidad y rechaza el resto de la salida de `yachay-net`. El adaptador no
+  escucha TCP, usa AF_UNIX para solicitudes y la lista de IP actualizada para
+  HTTPS; su vista de archivos solo expone `src/` y `.venv/` en modo lectura.
 
 Ver `docs/adr/ADR-018.md` para el detalle de las decisiones.
